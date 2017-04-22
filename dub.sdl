@@ -1,0 +1,5 @@
+name "jsoniopipe"
+description "JSON parser for iopipe"
+authors "Steven Schveighoffer"
+copyright "Copyright © 2017, Steven Schveighoffer"
+license "boost"
