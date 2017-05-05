@@ -82,23 +82,19 @@ bool isValue(JSONToken token)
  */
 JSONToken jsonTok(Chain)(ref Chain c, ref size_t pos) if (isIopipe!Chain && isSomeChar!(ElementEncodingType!(WindowType!Chain)))
 {
-    import std.string: stripLeft;
+    import std.ascii: isWhite;
     // strip any leading whitespace. If no data is left, we need to extend
-    auto w = c.window[pos .. $].stripLeft;
-    while(w.length == 0)
+    while(true)
     {
-        // need to extend
-        pos = c.window.length;
+        while(pos < c.window.length && isWhite(c.window[pos]))
+            ++pos;
+        if(pos < c.window.length)
+            break;
         if(c.extend(0) == 0)
-            // could not extend, end of file
             return JSONToken.EOF;
-        w = c.window[pos .. $].stripLeft;
     }
 
-    // move the window start to the new item.
-    pos = c.window.length - w.length;
-
-    switch(w[0]) with(JSONToken)
+    switch(c.window[pos]) with(JSONToken)
     {
     case '{':
         return ObjectStart;
@@ -741,7 +737,7 @@ JSONItem jsonItem(bool replaceEscapes = true, Chain)(ref Chain c, ref size_t pos
  *
  * Each new item/token can be obtained by calling the `next` method.
  */
-struct JSONParser(Chain, bool replaceEscapes)
+struct JSONTokenizer(Chain, bool replaceEscapes)
 {
     import std.bitmanip : BitArray;
 
@@ -789,6 +785,17 @@ struct JSONParser(Chain, bool replaceEscapes)
         {
             state = (--stackLen == 0) ? State.End : State.Comma;
         }
+    }
+
+    @property bool finished()
+    {
+        return state == State.End;
+    }
+
+    // where are we in the buffer
+    @property size_t position()
+    {
+        return pos;
     }
 
     /**
@@ -887,9 +894,9 @@ struct JSONParser(Chain, bool replaceEscapes)
 /**
  * Wrap a text iopipe into a JSONParser struct. 
  */
-auto jsonParser(bool replaceEscapes = true, Chain)(Chain c)
+auto jsonTokenizer(bool replaceEscapes = true, Chain)(Chain c)
 {
-    return JSONParser!(Chain, replaceEscapes)(c);
+    return JSONTokenizer!(Chain, replaceEscapes)(c);
 }
 
 unittest
@@ -902,7 +909,7 @@ unittest
         {
             // use a simple pipe to simulate not having all the data available at once.
             auto pipeAdapter = SimplePipe!(C[])(jsonData);
-            auto parser = jsonParser!replaceEscapes(pipeAdapter);
+            auto parser = jsonTokenizer!replaceEscapes(pipeAdapter);
             JSONItem[] items;
             while(true)
             {
