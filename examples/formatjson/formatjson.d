@@ -7,12 +7,12 @@ import iopipe.buffer;
 
 void main(string[] args)
 {
-    auto parser = openDev(args[1]).bufd.decodeText!(UTFType.UTF8).jsonTokenizer!false;
+   // auto parser = openDev(args[1]).bufd.decodeText!(UTFType.UTF8).jsonTokenizer!false;
 
-    /*import std.mmfile;
+    import std.mmfile;
     scope mmf = new MmFile(args[1]);
     auto x = cast(immutable(char)[])mmf[];
-    auto parser = x.jsonTokenizer!false;*/
+    auto parser = x.jsonTokenizer!false;
 
     auto outputter = bufd!(char).push!(c => c
                                 .encodeText!(UTFType.UTF8)

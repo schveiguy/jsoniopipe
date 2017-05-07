@@ -163,7 +163,7 @@ template parseJSON(bool inPlace = false, bool duplicate = true, Chain)
                     continue;
                 }
                 arr.array ~= buildValue(item);
-                static if(!inPlace) // release some data so we can give the buffer more space
+                static if(duplicate) // release some data so we can give the buffer more space
                     parser.release(parser.position);
                 item = parser.next();
             }
