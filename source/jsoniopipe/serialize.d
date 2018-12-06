@@ -187,11 +187,11 @@ OBJ_MEMBER_SWITCH:
     import std.algorithm : canFind, map, filter;
     if(visited[].canFind(false))
     {
-        // this is a big ugly, but necessary.
+        // this is a bit ugly, but gives a nicer message.
         static immutable marr = [members];
         import std.format;
         import std.range : enumerate;
-        throw new Exception(format("The following members of `%s` were not specified: `%(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => a[1]).map!(a => marr[a[0]])));
+        throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
     }
 }
 
