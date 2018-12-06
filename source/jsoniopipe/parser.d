@@ -15,21 +15,21 @@ import std.traits;
  * supposed to be, and doesn't necessarily validate the next item is in the
  * correct format.
  */
-enum JSONToken : ubyte
+enum JSONToken : char
 {
-    ObjectStart, /// {
-    ObjectEnd,   /// }
-    String,      /// "
-    Colon,       /// :
-    Comma,       /// ,
-    ArrayStart,  /// [
-    ArrayEnd,    /// ]
-    Number,      /// - or 0-9
-    True,        /// t
-    False,       /// f
-    Null,        /// n
-    EOF,         /// end of stream
-    Error,       /// unexpected data in stream
+    ObjectStart = '{', /// {
+    ObjectEnd = '}',   /// }
+    String = '"',      /// "
+    Colon = ':',       /// :
+    Comma = ',',       /// ,
+    ArrayStart = '[',  /// [
+    ArrayEnd = ']',    /// ]
+    Number = '0',      /// - or 0-9
+    True = 't',        /// t
+    False = 'f',       /// f
+    Null = 'n',        /// n
+    EOF = '\0',         /// end of stream
+    Error = 0xff,       /// unexpected data in stream
 }
 
 /**
@@ -94,28 +94,20 @@ JSONToken jsonTok(Chain)(ref Chain c, ref size_t pos) if (isIopipe!Chain && isSo
             return JSONToken.EOF;
     }
 
-    switch(c.window[pos]) with(JSONToken)
+    immutable cur = c.window[pos];
+    switch(cur) with(JSONToken)
     {
-    case '{':
-        return ObjectStart;
-    case '}':
-        return ObjectEnd;
-    case '"':
-        return String;
-    case ':':
-        return Colon;
-    case ',':
-        return Comma;
-    case '[':
-        return ArrayStart;
-    case ']':
-        return ArrayEnd;
-    case 't':
-        return True;
-    case 'f':
-        return False;
-    case 'n':
-        return Null;
+    case ObjectStart:
+    case ObjectEnd:
+    case String:
+    case Colon:
+    case Comma:
+    case ArrayStart:
+    case ArrayEnd:
+    case True:
+    case False:
+    case Null:
+        return cast(JSONToken)cur;
     case '-':
     case '0': .. case '9':
         return Number;
@@ -161,7 +153,16 @@ struct JSONItem
      */
     auto data(Chain)(ref Chain c)
     {
-        return c.window[offset .. offset + length];
+        try
+        {
+            return c.window[offset .. offset + length];
+        }
+        catch(Throwable t)
+        {
+            import std.stdio;
+            writeln("Error: ", offset, " ", length, " ", c.window.length);
+            throw t;
+        }
     }
 }
 
@@ -197,7 +198,7 @@ int parseString(bool replaceEscapes = true, Chain)(ref Chain c, ref size_t pos, 
     // the first character must be a quote
     auto src = c.window;
     if(src.length == 0 || src[pos] != '"')
-        return false;
+        return -1;
     ++pos;
 
     immutable origPos = pos;
@@ -877,6 +878,14 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
     }
 
     /**
+     * Peek at the input stream and see what's coming next.
+     */
+    JSONToken peek()
+    {
+        return chain.jsonTok(pos);
+    }
+
+    /**
      * Release the given number of stream elements from the stream.
      * Note: you are only allowed to release elements that are ALREADY parsed.
      *
@@ -888,6 +897,33 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
         assert(pos >= elements);
         chain.release(elements);
         pos -= elements;
+    }
+
+
+    /**
+     * Release all elements that have been parsed completely. The return value
+     * is the number of elements that were released. Note that this can be done
+     * at any point, it doesn't matter if the parser is partway through an
+     * object, the rest of that object can still be parsed.
+     *
+     * The goal is to free up buffer space for more incoming data.  It is
+     * better to call this function than release directly if you just want to
+     * free up parsed data.
+     *
+     * Note that any string elements that refer to the buffer are invalidated,
+     * since the buffer space will be gone.
+     *
+     * Returns: The number of elements that were released.
+     */
+    size_t releaseParsed()
+    {
+        auto result = pos;
+        if(result)
+        {
+            chain.release(pos);
+            pos = 0;
+        }
+        return result;
     }
 }
 
@@ -982,4 +1018,3 @@ unittest
         verifyJson!false(q"{{123.456}}", [Check(ObjectStart, "{"), Check(Error, "123.456")]);
     }
 }
-

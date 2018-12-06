@@ -1,9 +1,11 @@
 /**
- * Mechanism to parse JSON data into a JSON object tree. Some aspects borrowed from std.json.
+ * Mechanism to parse JSON data into a JSON object tree. Some aspects borrowed
+ * from std.json.
  */
 module jsoniopipe.dom;
 import jsoniopipe.parser;
 import iopipe.traits;
+import std.traits;
 
 enum JSONType
 {
@@ -31,159 +33,168 @@ struct JSONValue(SType)
     }
 }
 
-template parseJSON(bool inPlace = false, bool duplicate = true, Chain)
+private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONItem item)
 {
-    alias SType = WindowType!Chain;
+    import std.conv;
+
     alias JT = JSONValue!SType;
-    struct DOMParser
+    with(JSONToken) switch (item.token)
     {
-        JSONTokenizer!(Chain, inPlace) parser;
-        JT buildValue(JSONItem item)
+    case ObjectStart:
+        return parser.buildObject!SType();
+    case ArrayStart:
+        return parser.buildArray!SType();
+    case String:
+        // See if we require copying.
         {
-            switch (item.token) with (JSONToken)
+            JT result;
+            result.type = JSONType.String;
+            if(item.hint == JSONParseHint.InPlace)
             {
-            case ObjectStart:
-                return buildObject();
-            case ArrayStart:
-                return buildArray();
-            case String:
-                // See if we require copying.
-                {
-                    JT result;
-                    result.type = JSONType.String;
-                    if(item.hint == JSONParseHint.InPlace)
-                    {
-                        static if(!duplicate)
-                        {
-                            // can just slice the string
-                            result.str = item.data(parser.chain);
-                            return result;
-                        }
-                        else
-                        {
-                            // need to copy anyway, but much easier than replacing escapes
-                            result.str = cast(typeof(result.str))item.data(parser.chain).dup;
-                            return result;
-                        }
-                    }
-                    else
-                    {
-                        // put the quotes back
-                        item.offset--;
-                        item.length += 2;
+                // get the data
+                // TODO: need to duplicate, even if it's the same type
+                result.str = item.data(parser.chain).to!SType;
+                return result;
+            }
+            else
+            {
+                // put the quotes back
+                item.offset--;
+                item.length += 2;
 
-                        // re-parse, this time replacing escapes. This is so ugly...
-                        auto newpipe = item.data(parser.chain).dup;
-                        size_t pos = 0;
-                        item.length = parseString(newpipe, pos, item.hint);
-                        ++item.offset;
-                        result.str = cast(typeof(result.str))item.data(newpipe);
-                        return result;
-                    }
-                }
-            case Number:
+                // re-parse, this time replacing escapes. This is so ugly...
+                static if(is(typeof(newpipe[] = parser.chain.window[])))
                 {
-                    // if it's an integer, parse as an integer. If not, parse as a float.
-                    // TODO: really this should be done while parsing, not that hard.
-                    import std.conv: parse;
-                    JT result;
-                    auto str = item.data(parser.chain);
-                    if(item.hint == JSONParseHint.Int)
-                    {
-                        result.type = JSONType.Integer;
-                        result.integer = parse!long(str);
-                        return result;
-                    }
-                    else
-                    {
-                        // floating point or with exponent
-                        result.type = JSONType.Floating;
-                        result.floating = parse!real(str);
-                        return result;
-                    }
+                    auto newpipe = new Unqual!(typeof(SType.init[0]))[item.length];
+                    newpipe[] = item.data(parser.chain);
                 }
-            case Null:
+                else
                 {
-                    JT result;
-                    result.type = JSONType.Null;
-                    return result;
+                    auto newpipe = item.data(parser.chain).to!(Unqual!(typeof(SType.init[0]))[]);
                 }
-            case True:
-                {
-                    JT result;
-                    result.type = JSONType.Bool;
-                    result.boolean = true;
-                    return result;
-                }
-            case False:
-                {
-                    JT result;
-                    result.type = JSONType.Bool;
-                    result.boolean = false;
-                    return result;
-                }
-            default:
-                throw new Exception("Error in JSON data");
+                size_t pos = 0;
+                auto len = parseString(newpipe, pos, item.hint);
+                result.str = cast(typeof(result.str))newpipe[1 .. 1 + len];
+                return result;
             }
         }
-        JT buildObject()
+    case Number:
         {
-            auto item = parser.next();
-            JT obj;
-            obj.type = JSONType.Obj;
-            while(item.token != JSONToken.ObjectEnd)
+            // if it's an integer, parse as an integer. If not, parse as a float.
+            // TODO: really this should be done while parsing, not that hard.
+            import std.conv: parse;
+            JT result;
+            auto str = item.data(parser.chain);
+            if(item.hint == JSONParseHint.Int)
             {
-                if(item.token == JSONToken.Comma)
-                    continue;
-                // the item must be a string
-                auto name = buildValue(item);
-                item = parser.next();
-                if(item.token != JSONToken.Colon)
-                    throw new Exception("Expected colon");
-                item = parser.next();
-                obj.object[name.str] = buildValue(item);
-                // release any data if we are always duplicating strings
-                static if(duplicate)
-                    parser.release(parser.position);
-                item = parser.next();
+                result.type = JSONType.Integer;
+                result.integer = parse!long(str);
+                assert(str.length == 0);
+                return result;
             }
-            return obj;
+            else
+            {
+                // floating point or with exponent
+                result.type = JSONType.Floating;
+                result.floating = parse!real(str);
+                assert(str.length == 0);
+                return result;
+            }
         }
-
-        JT buildArray()
+    case Null:
         {
-            auto item = parser.next();
-            JT arr;
-            arr.type = JSONType.Array;
-            while(item.token != JSONToken.ArrayEnd)
-            {
-                if(item.token == JSONToken.Comma)
-                {
-                    item = parser.next();
-                    continue;
-                }
-                arr.array ~= buildValue(item);
-                static if(duplicate) // release some data so we can give the buffer more space
-                    parser.release(parser.position);
-                item = parser.next();
-            }
-            return arr;
+            JT result;
+            result.type = JSONType.Null;
+            return result;
         }
+    case True:
+        {
+            JT result;
+            result.type = JSONType.Bool;
+            result.boolean = true;
+            return result;
+        }
+    case False:
+        {
+            JT result;
+            result.type = JSONType.Bool;
+            result.boolean = false;
+            return result;
+        }
+    default:
+        throw new Exception("Error in JSON data");
     }
+}
 
-    auto parseJSON(Chain c)
+private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser)
+{
+
+    alias JT = JSONValue!SType;
+    auto item = parser.next();
+    JT obj;
+    obj.type = JSONType.Obj;
+    while(item.token != JSONToken.ObjectEnd)
     {
-        auto dp = DOMParser(JSONTokenizer!(Chain, inPlace)(c));
-        switch(dp.parser.next.token) with (JSONToken)
+        if(item.token == JSONToken.Comma)
         {
-        case ObjectStart:
-            return dp.buildObject();
-        case ArrayStart:
-            return dp.buildArray();
-        default:
-            throw new Exception("Expected object or array");
+            item = parser.next;
+            continue;
         }
+        // the item must be a string
+        assert(item.token == JSONToken.String);
+        auto name = parser.buildValue!SType(item);
+        item = parser.next();
+        // should always be colon
+        assert(item.token == JSONToken.Colon);
+        item = parser.next();
+        obj.object[name.str] = parser.buildValue!SType(item);
+        // release any parsed data.
+        parser.releaseParsed();
+        item = parser.next();
     }
+    return obj;
+}
+
+private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser)
+{
+    alias JT = JSONValue!SType;
+    auto item = parser.next();
+    JT arr;
+    arr.type = JSONType.Array;
+    while(item.token != JSONToken.ArrayEnd)
+    {
+        arr.array ~= parser.buildValue!SType(item);
+        parser.releaseParsed();
+        item = parser.next();
+        if(item.token == JSONToken.Comma)
+            item = parser.next();
+    }
+    return arr;
+}
+
+auto parseJSON(Tokenizer)(ref Tokenizer tokenizer) if (isInstanceOf!(JSONTokenizer, Tokenizer))
+{
+    return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer);
+}
+
+auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer) if (isInstanceOf!(JSONTokenizer, Tokenizer))
+{
+    auto item = tokenizer.next();
+    auto result = tokenizer.buildValue!SType(item);
+    tokenizer.releaseParsed();
+    return result;
+}
+
+auto parseJSON(SType = void, Chain)(Chain chain) if (isIopipe!Chain && is(SType == void))
+{
+    return parseJSON!(WindowType!Chain)(chain);
+}
+
+auto parseJSON(SType, Chain)(Chain chain) if (isIopipe!Chain)
+{
+    enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
+    auto tokenizer = (chain).jsonTokenizer!(shouldReplaceEscapes);
+    return tokenizer.parseJSON!SType();
 }
 
 void printTree(JT)(JT item)
@@ -244,6 +255,6 @@ unittest
 {
     auto jt = parseJSON(q"{{"a" : [1, 2.5, "x", true, false, null]}}");
     //printTree(jt);
-    auto jt2 = parseJSON!(false, false)(q"{{"a" : [1, 2.5, "x", true, false, null]}}");
+    auto jt2 = parseJSON!(wstring)(q"{{"a" : [1, 2.5, "x\ua123", true, false, null]}}");
     //printTree(jt2);
 }
