@@ -2,7 +2,7 @@ import iopipe.stream;
 import iopipe.bufpipe;
 import iopipe.textpipe;
 import iopipe.valve;
-import jsoniopipe.parser;
+import iopipe.json.parser;
 import iopipe.buffer;
 
 void main(string[] args)
