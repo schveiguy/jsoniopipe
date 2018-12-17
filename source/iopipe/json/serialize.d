@@ -7,7 +7,7 @@ import std.range.primitives;
 import std.traits;
 import std.typecons : Nullable;
 
-private void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__)
+private void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
@@ -61,6 +61,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicA
     {
         typeof(item[0]) elem;
         deserializeImpl(tokenizer, elem);
+        app ~= elem;
         tokenizer.releaseParsed();
         jsonItem = tokenizer.next;
         if(jsonItem.token == JSONToken.ArrayEnd)
@@ -233,7 +234,9 @@ T deserialize(T, Chain)(Chain c) if (isIopipe!Chain)
     return tokenizer.deserialize!T;
 }
 
-unittest
+// TODO: this really is pure, but there is a cycle in the DOM parser so
+// compiler doesn't infer it.
+/*pure*/ unittest
 {
     static struct S
     {
@@ -283,4 +286,80 @@ unittest
             }]
         }}";
     auto s2 = json2.deserialize!S2;
+
+    assert(s2.arr1 == [5,6,7,8]);
+    assert(s2.arr2 == [1,2,3,4,5,6,7,8]);
+    assert(s2.arr3 == [S(5, "foo", 8.5, true), S(7, "bar", 10.0, false)]);
+
+    static struct S3
+    {
+        Nullable!int x;
+        Nullable!int y;
+        JSONValue!string json;
+    }
+
+    auto json3 = q"{
+        {
+            "x" : 5,
+            "y" : null,
+            "json" : {
+            "arr1" : [5,6,7,8],
+            "arr2" : [1,null,true,"hi"],
+            "arr3" : [
+            {
+                "x" : 5,
+                "y" : "foo",
+                "d" : 8.5,
+                "b" : true
+            },
+            {
+                "x" : 7,
+                "y" : "bar",
+                "d" : 10.0,
+                "b" : false
+            }]
+            }
+        }
+    }";
+
+    auto s3 = json3.deserialize!S3;
+    assert(!s3.x.isNull);
+    assert(s3.x == 5);
+    assert(s3.y.isNull);
+    assert(s3.json.type == JSONType.Obj);
+    assert(s3.json.object.length == 3);
+    auto jv = s3.json.object["arr1"];
+    assert(jv.type == JSONType.Array);
+    assert(jv.array.length == 4);
+    assert(jv.array[0].type == JSONType.Integer);
+    assert(jv.array[1].type == JSONType.Integer);
+    assert(jv.array[2].type == JSONType.Integer);
+    assert(jv.array[3].type == JSONType.Integer);
+    assert(jv.array[0].integer == 5);
+    assert(jv.array[1].integer == 6);
+    assert(jv.array[2].integer == 7);
+    assert(jv.array[3].integer == 8);
+    jv = s3.json.object["arr2"]; // array of different types
+    assert(jv.type == JSONType.Array);
+    assert(jv.array.length == 4);
+    assert(jv.array[0].type == JSONType.Integer);
+    assert(jv.array[1].type == JSONType.Null);
+    assert(jv.array[2].type == JSONType.Bool);
+    assert(jv.array[3].type == JSONType.String);
+    assert(jv.array[0].integer == 1);
+    //jv.array[1] no value for "Null" type
+    assert(jv.array[2].boolean);
+    assert(jv.array[3].str == "hi");
+    jv = s3.json.object["arr3"];
+    assert(jv.type == JSONType.Array);
+    assert(jv.array.length == 2);
+    foreach(v; jv.array)
+    {
+        assert(v.type == JSONType.Obj);
+        assert(v.object.length == 4);
+        assert("x" in v.object);
+        assert("y" in v.object);
+        assert("d" in v.object);
+        assert("b" in v.object);
+    }
 }

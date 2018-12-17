@@ -50,7 +50,7 @@ enum JSONParseHint : ubyte
  * Returns: `true` if the token can be used in place of a "value". Useful for
  * validation.
  */
-bool isValue(JSONToken token)
+bool isValue(JSONToken token) pure @safe nothrow
 {
     switch(token) with(JSONToken)
     {
@@ -153,16 +153,7 @@ struct JSONItem
      */
     auto data(Chain)(ref Chain c)
     {
-        try
-        {
-            return c.window[offset .. offset + length];
-        }
-        catch(Throwable t)
-        {
-            import std.stdio;
-            writeln("Error: ", offset, " ", length, " ", c.window.length);
-            throw t;
-        }
+        return c.window[offset .. offset + length];
     }
 }
 
