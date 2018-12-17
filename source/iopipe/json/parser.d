@@ -4,7 +4,7 @@ License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
            http://www.boost.org/LICENSE_1_0.txt)
 Authors: Steven Schveighoffer
 */
-module jsoniopipe.parser;
+module iopipe.json.parser;
 import iopipe.traits;
 import iopipe.bufpipe;
 import std.range.primitives;

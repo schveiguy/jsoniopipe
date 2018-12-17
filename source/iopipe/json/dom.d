@@ -2,8 +2,8 @@
  * Mechanism to parse JSON data into a JSON object tree. Some aspects borrowed
  * from std.json.
  */
-module jsoniopipe.dom;
-import jsoniopipe.parser;
+module iopipe.json.dom;
+import iopipe.json.parser;
 import iopipe.traits;
 import std.traits;
 

@@ -1,6 +1,6 @@
-module jsoniopipe.serialize;
-import jsoniopipe.parser;
-import jsoniopipe.dom;
+module iopipe.json.serialize;
+import iopipe.json.parser;
+import iopipe.json.dom;
 import iopipe.traits;
 import std.range.primitives;
 
