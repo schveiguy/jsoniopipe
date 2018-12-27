@@ -2,6 +2,7 @@ module iopipe.json.serialize;
 import iopipe.json.parser;
 import iopipe.json.dom;
 import iopipe.traits;
+import iopipe.bufpipe;
 import std.range.primitives;
 
 import std.traits;
@@ -40,6 +41,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (__traits(i
     jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
+// TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicArray!T && !isSomeString!T)
 {
     auto jsonItem = tokenizer.next;
@@ -227,7 +229,7 @@ T deserialize(T, JT)(ref JT tokenizer) if (isInstanceOf!(JSONTokenizer, JT))
     return result;
 }
 
-T deserialize(T, Chain)(Chain c) if (isIopipe!Chain)
+T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
     auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
@@ -362,4 +364,212 @@ T deserialize(T, Chain)(Chain c) if (isIopipe!Chain)
         assert("d" in v.object);
         assert("b" in v.object);
     }
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isInputRange!T && !isSomeString!T && !isInstanceOf!(Nullable, T))
+{
+    // open brace
+    w("[");
+    bool first = true;
+    foreach(ref item; val)
+    {
+        if(first)
+            first = false;
+        else
+            w(", ");
+        serializeImpl(w, item);
+    }
+    w("]");
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
+{
+    auto arr = val;
+    serializeImpl(w, val[]);
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isSomeString!T)
+{
+    w(`"`);
+    put(w, val);
+    w(`"`);
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct) && !isInputRange!T)
+{
+    static if(isInstanceOf!(Nullable, T))
+    {
+        if(val.isNull)
+            w("null");
+        else
+            serializeImpl(w, val.get);
+    }
+    else static if(isInstanceOf!(JSONValue, T))
+    {
+        with(JSONType) final switch(val.type)
+        {
+        case Integer:
+            serializeImpl(w, val.integer);
+            break;
+        case Floating:
+            serializeImpl(w, val.floating);
+            break;
+        case String:
+            serializeImpl(w, val.str);
+            break;
+        case Array:
+            serializeImpl(w, val.array);
+            break;
+        case Obj:
+            // serialize as if it was an object
+            w("{");
+            {
+                bool first = true;
+                foreach(k, ref v; val.object)
+                {
+                    if(first)
+                        first = false;
+                    else
+                        w(", ");
+                    w(`"`);
+                    w(n);
+                    w(`" : `);
+                    serializeImpl(w, v);
+                }
+            }
+            w("}");
+            break;
+        case Null:
+            w("null");
+            break;
+        case Bool:
+            w(val.boolean ? "true" : "false");
+            break;
+        }
+    }
+    else
+    {
+        // serialize as an object
+        w("{");
+        bool first = true;
+        static foreach(n; __traits(allMembers, T))
+        {
+            if(first)
+                first = false;
+            else
+                w(", ");
+            w(`"`);
+            w(n);
+            w(`" : `);
+            serializeImpl(w, __traits(getMember, val, n));
+        }
+        w("}");
+    }
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isNumeric!T)
+{
+    import std.format;
+    formattedWrite(w, "%s", val);
+}
+
+void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
+{
+    w(val ? "true" : "false");
+}
+
+// serialize an item to an iopipe.
+// The behavior flag specifies whether the json serializer should release data
+// in the iopipe as it writes, or if it should keep it in the buffer (no
+// releases are called).
+//
+// Use case for releasing is for an output pipe that will be written to a file
+// for instance as it's released. Use case for not releasing is when you are
+// writing to a string.
+//
+// Returns: number of elements written in the output iopipe. If
+// release-on-write is specified, none of the data will remain in the immediate
+// iopipe buffer.
+// If no-release is specified, then the return value indicates the number of
+// elements that are in the buffer. If offset is specified, then that is where
+// the data will begin to be written.
+//
+// if T does not evaluate to an array or object type, then it wraps it in a
+// single-element array to make the result a valid JSON string.
+//
+size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val, size_t offset = 0)
+if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))// && is(typeof(serializeImpl((const(char)[] a) {}, val))))
+{
+    size_t result = 0;
+    alias Char = ElementEncodingType!(WindowType!Chain);
+    void w(const(Char)[] data)
+    {
+        auto nWritten = chain.writeBuf!relOnWrite(data, offset);
+        result += nWritten;
+        static if(relOnWrite)
+            offset = 0;
+        else
+            offset += nWritten;
+    }
+
+    static if(isInstanceOf!(JSONValue, T))
+    {
+        // json value. Check to see if it's an object or array. If not, write the 
+        bool needClosingBrace =
+            !(val.type == JSONType.Obj || val.type == JSONType.Array);
+        if(needClosingBrace)
+            w("[");
+    }
+    else static if(isInstanceOf!(Nullable, T))
+    {
+        if(val.isNull)
+        {
+            w("[null]");
+            return result;
+        }
+        else
+            return chain.serialize!relOnWrite(val, offset);
+    }
+    else static if(is(T == struct) || isArray!T)
+    {
+        enum needClosingBrace = false;
+    }
+    else
+    {
+        enum needClosingBrace = true;
+        w("[");
+    }
+
+    // serialize the item, recursively
+    serializeImpl(&w, val);
+
+    if(needClosingBrace)
+        w("]");
+    return result;
+}
+
+// convenience, using normal serialization to write to a string.
+string serialize(T)(auto ref T val)
+{
+    import std.exception;
+    auto outBuf = bufd!char;
+    auto dataSize = outBuf.serialize!(ReleaseOnWrite.no)(val);
+    auto result = outBuf.window[0 .. dataSize];
+    result.assumeSafeAppend;
+    return result.assumeUnique;
+}
+
+unittest
+{
+    assert(serialize(1) == "[1]");
+    assert(serialize([1,2,3,4]) == "[1, 2, 3, 4]");
+    static struct S
+    {
+        int x;
+        float y;
+        string s;
+        bool b;
+    }
+
+    assert(serialize(S(1, 2.5, "hi", true)) == `{"x" : 1, "y" : 2.5, "s" : "hi", "b" : true}`);
 }
