@@ -27,7 +27,7 @@ struct JSONValue(SType)
         long integer;
         real floating;
         JSONValue[] array;
-        JSONValue[SType] object;
+        JSONValue[immutable(SType)] object;
         SType str;
         bool boolean;
     }
@@ -147,7 +147,7 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser)
         // should always be colon
         assert(item.token == JSONToken.Colon);
         item = parser.next();
-        obj.object[name.str] = parser.buildValue!SType(item);
+        obj.object[name.str.idup] = parser.buildValue!SType(item);
         // release any parsed data.
         parser.releaseParsed();
         item = parser.next();

@@ -8,7 +8,14 @@ import std.range.primitives;
 import std.traits;
 import std.typecons : Nullable;
 
-private void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
+// define some UDAs to affect serialization
+struct SerializeAs {}
+struct Ignore {}
+
+SerializeAs serializeAs() { return SerializeAs.init; }
+Ignore ignore() { return Ignore.init; }
+
+void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
@@ -138,63 +145,89 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isSomeStri
 // TODO: need to use UDAs to drive how this works
 private template SerializableMembers(T)
 {
-    enum SerializableMembers = __traits(allMembers, T);
+    import std.traits;
+    import std.meta;
+    enum WithoutIgnore(string s) = !hasUDA!(__traits(getMember, T, s), Ignore());
+    enum SerializableMembers = Filter!(WithoutIgnore, FieldNameTuple!T);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    // expect an object. We want to deserialize the JSON data
-    alias members = SerializableMembers!T;
-    // TODO use bit array instead and core.bitop
-    //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
-    bool[members.length] visited;
+    item.fromJSON(tokenizer);
+}
 
-    auto jsonItem = tokenizer.next;
-    jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
-
-    // look at each string, then parse the given values
-    jsonItem = tokenizer.next();
-    while(jsonItem.token != JSONToken.ObjectEnd)
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+{
+    // check to see if any member is defined as the representation
+    import std.traits;
+    alias representers = getSymbolsByUDA!(T, SerializeAs());
+    static if(representers.length > 0)
     {
-        if(jsonItem.token == JSONToken.Comma)
-        {
-            jsonItem = tokenizer.next();
-            continue;
-        }
-
-        jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        auto name = jsonItem.data(tokenizer.chain);
-
-        jsonItem = tokenizer.next();
-        jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
-OBJ_MEMBER_SWITCH:
-        switch(name)
-        {
-            static foreach(i, m; members)
-            {
-            case m:
-                tokenizer.deserializeImpl(__traits(getMember, item, m));
-                visited[i] = true;
-                break OBJ_MEMBER_SWITCH;
-            }
-
-        default:
-            import std.format : format;
-            throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
-        }
-        tokenizer.releaseParsed();
-        jsonItem = tokenizer.next();
+        static assert(representers.length == 1, "Only one field can be used to represent an object");
+        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
     }
-
-    // ensure all members visited
-    import std.algorithm : canFind, map, filter;
-    if(visited[].canFind(false))
+    else
     {
-        // this is a bit ugly, but gives a nicer message.
-        static immutable marr = [members];
-        import std.format;
-        import std.range : enumerate;
-        throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+        // expect an object. We want to deserialize the JSON data
+        alias members = SerializableMembers!T;
+        // TODO use bit array instead and core.bitop
+        //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
+        bool[members.length] visited;
+
+        auto jsonItem = tokenizer.next;
+        jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+
+        // look at each string, then parse the given values
+        jsonItem = tokenizer.next();
+        static if(members.length)
+        {
+            while(jsonItem.token != JSONToken.ObjectEnd)
+            {
+                if(jsonItem.token == JSONToken.Comma)
+                {
+                    jsonItem = tokenizer.next();
+                    continue;
+                }
+
+                jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
+                auto name = jsonItem.data(tokenizer.chain);
+
+                jsonItem = tokenizer.next();
+                jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
+OBJ_MEMBER_SWITCH:
+                switch(name)
+                {
+                    static foreach(i, m; members)
+                    {
+                    case m:
+                        tokenizer.deserializeImpl(__traits(getMember, item, m));
+                        visited[i] = true;
+                        break OBJ_MEMBER_SWITCH;
+                    }
+
+                default:
+                    import std.format : format;
+                    throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
+                }
+                tokenizer.releaseParsed();
+                jsonItem = tokenizer.next();
+            }
+            // ensure all members visited
+            import std.algorithm : canFind, map, filter;
+            if(visited[].canFind(false))
+            {
+                // this is a bit ugly, but gives a nicer message.
+                static immutable marr = [members];
+                import std.format;
+                import std.range : enumerate;
+                throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+            }
+        }
+        else
+        {
+            // no members, expect an object end
+            jsonExpect(jsonItem, JSONToken.ObjectEnd, "Expecting end of memberless object " ~ T.stringof);
+        }
     }
 }
 
@@ -234,6 +267,18 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
     auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
     return tokenizer.deserialize!T;
+}
+
+void deserialize(T, JT)(ref JT tokenizer, ref T item) if (isInstanceOf!(JSONTokenizer, JT))
+{
+    deserializeImpl(tokenizer, item);
+}
+
+void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
+{
+    enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
+    auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
+    return tokenizer.deserialize(item);
 }
 
 // TODO: this really is pure, but there is a cycle in the DOM parser so
@@ -366,7 +411,42 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isInputRange!T && !isSomeString!T && !isInstanceOf!(Nullable, T))
+// test attributes and empty struct
+unittest
+{
+    static struct S
+    {
+        int x;
+        @ignore bool foo;
+    }
+    auto s = deserialize!S(`{"x": 5}`);
+    assert(s.x == 5);
+
+    static struct Y
+    {
+    }
+
+    auto y = deserialize!Y(`{}`);
+
+    static struct T
+    {
+        @serializeAs string s;
+        int x;
+    }
+
+    T[] arr = deserialize!(T[])(`["hi", "there"]`);
+    assert(arr.length == 2);
+    assert(arr[0].s == "hi");
+    assert(arr[1].s == "there");
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
+{
+    auto arr = val;
+    serializeImpl(w, val[]);
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isDynamicArray!T && !isSomeString!T)
 {
     // open brace
     w("[");
@@ -382,12 +462,6 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isI
     w("]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
-{
-    auto arr = val;
-    serializeImpl(w, val[]);
-}
-
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isSomeString!T)
 {
     w(`"`);
@@ -395,7 +469,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     w(`"`);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct) && !isInputRange!T)
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
 {
     static if(isInstanceOf!(Nullable, T))
     {
@@ -447,12 +521,38 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
             break;
         }
     }
+    else static if(__traits(hasMember, T, "toJSON"))
+    {
+        val.toJSON(w);
+    }
+    else static if(getSymbolsByUDA!(T, SerializeAs()).length > 0)
+    {
+        alias representers = getSymbolsByUDA!(T, SerializeAs());
+        // serialize as the single item
+        static assert(representers.length == 1, "Only one field can be used to represent an object");
+        serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
+    }
+    else static if(isInputRange!T)
+    {
+        // open brace
+        w("[");
+        bool first = true;
+        foreach(ref item; val)
+        {
+            if(first)
+                first = false;
+            else
+                w(", ");
+            serializeImpl(w, item);
+        }
+        w("]");
+    }
     else
     {
         // serialize as an object
         w("{");
         bool first = true;
-        static foreach(n; __traits(allMembers, T))
+        static foreach(n; SerializableMembers!T)
         {
             if(first)
                 first = false;
@@ -498,7 +598,7 @@ void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
 // single-element array to make the result a valid JSON string.
 //
 size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val, size_t offset = 0)
-if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))// && is(typeof(serializeImpl((const(char)[] a) {}, val))))
+if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
     size_t result = 0;
     alias Char = ElementEncodingType!(WindowType!Chain);
@@ -561,8 +661,19 @@ string serialize(T)(auto ref T val)
 
 unittest
 {
-    assert(serialize(1) == "[1]");
-    assert(serialize([1,2,3,4]) == "[1, 2, 3, 4]");
+    auto str1 = serialize(1);
+    assert(str1 == "[1]");
+    int item1;
+    auto strpipe = str1;
+    strpipe.deserialize(*(cast(int[1]*)&item1));
+    assert(item1 == 1);
+    auto str2 = serialize([1,2,3,4]);
+    assert(str2 == "[1, 2, 3, 4]");
+    int[4] item2;
+    strpipe = str2;
+    strpipe.deserialize(item2);
+    assert(item2[] == [1, 2, 3, 4]);
+    assert(str2 == "[1, 2, 3, 4]");
     static struct S
     {
         int x;
@@ -572,4 +683,40 @@ unittest
     }
 
     assert(serialize(S(1, 2.5, "hi", true)) == `{"x" : 1, "y" : 2.5, "s" : "hi", "b" : true}`);
+
+    // serialize nested arrays and objects
+    auto str3 = serialize([S(1, 3.0, "foo", false), S(2, 8.5, "bar", true)]);
+    assert(str3 == `[{"x" : 1, "y" : 3, "s" : "foo", "b" : false}, {"x" : 2, "y" : 8.5, "s" : "bar", "b" : true}]`, str3);
+    auto arr = str3.deserialize!(S[]);
+    assert(arr.length == 2);
+    assert(arr[0].s == "foo");
+    assert(arr[1].b);
+    assert(arr[1].x == 2);
+}
+
+unittest
+{
+    static struct S
+    {
+        int x;
+        @ignore bool y;
+    }
+
+    auto s = S(1, true);
+    auto str = s.serialize;
+    assert(str == `{"x" : 1}`, str);
+
+    static struct T
+    {
+        @serializeAs string s;
+        int x;
+    }
+
+    static struct U
+    {
+        T t;
+    }
+    auto u = U(T("hello", 1));
+    auto str2 = u.serialize;
+    assert(str2 == `{"t" : "hello"}`, str2);
 }
