@@ -11,9 +11,11 @@ import std.typecons : Nullable;
 // define some UDAs to affect serialization
 struct SerializeAs {}
 struct Ignore {}
+struct Optional {}
 
 SerializeAs serializeAs() { return SerializeAs.init; }
 Ignore ignore() { return Ignore.init; }
+Optional optional() { return Optional.init; }
 
 void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
@@ -48,8 +50,31 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (__traits(i
     jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == enum))
+{
+    // enums are special, we can serialize them based on strings or integral values
+    auto jsonItem = tokenizer.next;
+    import std.conv : to;
+    static if(is(T : int))
+    {
+        // int based enum. If the next token is a number, parse it and convert
+        if(jsonItem.token == JSONToken.Number)
+        {
+            // it's a number, parse as an integer, and see if it converts.
+            auto intval = jsonItem.data(tokenizer.chain).to!int;
+            // parse into the enum.
+            item = intval.to!T;
+            return;
+        }
+    }
+
+    // convert to the enum via the string name
+    jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
+    item = jsonItem.data(tokenizer.chain).to!T;
+}
+
 // TODO: should deal with writable input ranges and output ranges
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicArray!T && !isSomeString!T)
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     auto jsonItem = tokenizer.next;
     jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -173,6 +198,13 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == st
         // TODO use bit array instead and core.bitop
         //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
         bool[members.length] visited;
+
+        // any members that are optional, mark as already visited
+        static foreach(idx, m; members)
+        {
+            static if(hasUDA!(__traits(getMember, T, m), Optional()))
+                visited[idx] = true;
+        }
 
         auto jsonItem = tokenizer.next;
         jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
