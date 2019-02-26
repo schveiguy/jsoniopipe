@@ -758,7 +758,7 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
         BitArray stack;
         size_t stackLen;
         size_t pos;
-        private State state;
+        State state;
         bool inObj()
         {
             return stackLen == 0 ? false : stack[stackLen - 1];
@@ -777,6 +777,11 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
         {
             state = (--stackLen == 0) ? State.End : State.Comma;
         }
+
+        // caching items allows us to parse only once, yet review the items later.
+        bool caching;
+        JSONItem[] cache;
+        size_t cIdx;
     }
 
     @property bool finished()
@@ -784,9 +789,92 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
         return state == State.End;
     }
 
+    // start caching elements. When this is enabled, rewind will jump back to
+    // the first element and replay from the cache instead of parsing. Make
+    // sure to call endCache when you are done with the replay cache.
+    void startCache()
+    {
+        caching = true;
+        if(cIdx != 0)
+        {
+            // remove all the elements before the current one, or else the
+            // rewind command will not work right.
+            import std.algorithm.mutation : copy;
+            copy(cache[cIdx .. $], cache[0 .. $ - cIdx]);
+            cache = cache[0 .. $ - cIdx];
+            cache.assumeSafeAppend;
+            cIdx = 0;
+        }
+    }
+
+    /**
+     * stop caching elements (the cache will be freed when no longer needed)
+     */
+    void endCache()
+    {
+        caching = false;
+        if(cIdx == cache.length)
+        {
+            // deallocate the cache.
+            cache.length = 0;
+            cache.assumeSafeAppend;
+            cIdx = 0;
+        }
+    }
+
+    // this specialized function will skip the current item, taking into
+    // account the nested nature of JSON. The return value is the next JSONItem
+    // after the skipped data.
+    //
+    // If at the beginning of the JSON stream, the entire JSON stream is parsed
+    // until the end of the JSON data in the stream.
+    //
+    // If at a member name, colon, or value expected, the entire member is skipped.
+    //
+    // If at a comma, the comma is skipped.
+    //
+    // If an error is encountered, it is returned immediately
+    //
+    JSONItem skipItem()
+    {
+        size_t depth = 0;
+        // parse until we see the stack length get less than our current depth,
+        // until we see a comma, error, or end of stream.
+        while(true)
+        {
+            auto item = next();
+            with(JSONToken) switch(item.token)
+            {
+            case ObjectStart:
+            case ArrayStart:
+                ++depth;
+                break;
+            case ObjectEnd:
+            case ArrayEnd:
+                if(!depth)
+                    // at the end of the current object
+                    return item;
+                --depth;
+                break;
+            case Comma:
+                if(depth == 0)
+                    return item;
+                break;
+            case Error:
+            case EOF:
+                return item;
+            default:
+                // everything else we ignore
+                break;
+            }
+        }
+    }
+
     // where are we in the buffer
     @property size_t position()
     {
+        if(cIdx < cache.length)
+            return cache[cIdx].offset;
         return pos;
     }
 
@@ -795,7 +883,24 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
      */
     JSONItem next()
     {
-        // parse the next item
+        if(cIdx < cache.length)
+        {
+            auto item = cache[cIdx++];
+            if(cIdx == cache.length && !caching)
+            {
+                // done with the cache
+                cache.length = 0;
+                cache.assumeSafeAppend;
+                cIdx = 0;
+            }
+            return item;
+        }
+
+        if(state == State.End)
+            // return an EOF item, even if the stream is not done.
+            return JSONItem(pos, 0, JSONToken.EOF);
+
+        // else, not cached, parse item from the chain.
         auto item = chain.jsonItem!replaceEscapes(pos);
 
         final switch(state) with(JSONToken)
@@ -859,13 +964,22 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
                 item.token = Error;
             break;
         case State.End:
-            // only can read an EOF
-            if(item.token != EOF)
-                item.token = Error;
-            break;
+            // this is handled outside the switch statement
+            assert(0);
         }
 
+        if(caching)
+        {
+            cache ~= item;
+            ++cIdx;
+        }
         return item;
+    }
+
+    void rewind()
+    {
+        assert(caching);
+        cIdx = 0;
     }
 
     /**
@@ -873,6 +987,8 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
      */
     JSONToken peek()
     {
+        if(cIdx < cache.length)
+            return cache[cIdx].token;
         return chain.jsonTok(pos);
     }
 
@@ -884,10 +1000,39 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
      */
     void release(size_t elements)
     {
+        // not compatible while we are caching. You can still have a cache, but
+        // the caching needs to be turned off.
+        assert(!caching);
+
         // release items from the chain window.
-        assert(pos >= elements);
+        assert(position >= elements);
         chain.release(elements);
         pos -= elements;
+
+        // update the cache if it exists
+        if(cache.length > 0)
+        {
+            size_t toRemove = 0;
+            foreach(ref ci; cache)
+            {
+                if(ci.offset < elements)
+                    ++toRemove;
+                else
+                    ci.offset -= elements;
+            }
+            if(toRemove > 0)
+            {
+                // we shouldn't be removing any elements still in use.
+                assert(toRemove <= cIdx);
+
+                import std.algorithm.mutation : copy;
+                auto validElems = cache.length - toRemove;
+                copy(cache[toRemove .. $], cache[0 .. validElems]);
+                cache = cache[0 .. validElems];
+                cache.assumeSafeAppend;
+                cIdx -= toRemove;
+            }
+        }
     }
 
 
@@ -908,12 +1053,9 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
      */
     size_t releaseParsed()
     {
-        auto result = pos;
+        auto result = position;
         if(result)
-        {
-            chain.release(pos);
-            pos = 0;
-        }
+            release(result);
         return result;
     }
 }
@@ -960,7 +1102,7 @@ unittest
         }
         auto jsonData = q"{   {
             "abc" : 123.456,
-                "def": [1,0.5, 8e10, "hi", "\r\n\f\b\u0025", {}, true, false, null] }  }";
+                "def": [1,0.5, 8e10, "hi", "\r\n\f\b\u0025", {}, true, false, null] }}";
         auto checkitems = [ 
             Check(ObjectStart, "{"),
             Check(String, "abc"),
@@ -1008,4 +1150,101 @@ unittest
         verifyJson!false(q"{123.456}", [Check(Error, "123.456")]);
         verifyJson!false(q"{{123.456}}", [Check(ObjectStart, "{"), Check(Error, "123.456")]);
     }
+}
+
+unittest
+{
+    // test caching
+    auto jsonData = q"{{"a": 1,"b": 123.456, "c": null}}";
+    auto parser = jsonData.jsonTokenizer!false;
+    bool check(JSONItem item, JSONToken token, string expected)
+    {
+        return(item.token == token && item.data(parser.chain) == expected);
+    }
+    with(JSONToken)
+    {
+        assert(check(parser.next, ObjectStart, "{"));
+        assert(check(parser.next, String, "a"));
+        assert(check(parser.next, Colon, ":"));
+
+        // cache the start of a value
+        parser.startCache;
+        assert(check(parser.next, Number, "1"));
+        assert(check(parser.next, Comma, ","));
+        assert(check(parser.next, String, "b"));
+        assert(check(parser.next, Colon, ":"));
+
+        // replay the cache for the value of a
+        parser.rewind();
+        assert(check(parser.next, Number, "1"));
+        assert(check(parser.next, Comma, ","));
+
+        // now with the cache still in there, restart the cache
+        parser.startCache;
+        assert(check(parser.next, String, "b"));
+        assert(check(parser.next, Colon, ":"));
+        assert(check(parser.next, Number, "123.456"));
+        assert(check(parser.next, Comma, ","));
+
+        // replay b again
+        parser.rewind();
+        parser.endCache();
+        assert(check(parser.next, String, "b"));
+        assert(check(parser.next, Colon, ":"));
+        // test out releasing cached data
+        parser.releaseParsed();
+        assert(check(parser.next, Number, "123.456"));
+        assert(check(parser.next, Comma, ","));
+        assert(check(parser.next, String, "c"));
+        assert(check(parser.next, Colon, ":"));
+        assert(check(parser.next, Null, "null"));
+        // the cache should now be exhausted
+        assert(parser.cache.length == 0);
+        assert(parser.cIdx == 0);
+        assert(check(parser.next, ObjectEnd, "}"));
+    }
+}
+
+unittest
+{
+    // test skipping items
+    auto jsonData = q"{{"a" : 1, "b" : {"c" : [1,2,3], "d" : { "hello" : "world" }}}}";
+
+    auto parser = jsonData.jsonTokenizer!false;
+    bool check(JSONItem item, JSONToken token, string expected)
+    {
+        if(item.token == token && item.data(parser.chain) == expected)
+            return true;
+        import std.stdio;
+        writeln(item);
+        return false;
+    }
+    parser.startCache;
+    auto item = parser.skipItem(); // skip it all;
+    assert(check(item, JSONToken.EOF, ""));
+    assert(parser.position == jsonData.length);
+
+    // start over
+    parser.rewind;
+    assert(check(parser.next, JSONToken.ObjectStart, "{"));
+    assert(check(parser.skipItem, JSONToken.Comma, ","));
+    assert(check(parser.next, JSONToken.String, "b"));
+    assert(check(parser.skipItem, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.next, JSONToken.EOF, ""));
+    assert(parser.position == jsonData.length);
+
+    // another try
+    parser.rewind;
+    assert(check(parser.next, JSONToken.ObjectStart, "{"));
+    assert(check(parser.skipItem, JSONToken.Comma, ","));
+    assert(check(parser.next, JSONToken.String, "b"));
+    assert(check(parser.next, JSONToken.Colon, ":"));
+    assert(check(parser.next, JSONToken.ObjectStart, "{"));
+    assert(check(parser.next, JSONToken.String, "c"));
+    assert(check(parser.skipItem, JSONToken.Comma, ","));
+    assert(check(parser.next, JSONToken.String, "d"));
+    assert(check(parser.skipItem, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.skipItem, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.next, JSONToken.EOF, ""));
+    assert(parser.position == jsonData.length);
 }

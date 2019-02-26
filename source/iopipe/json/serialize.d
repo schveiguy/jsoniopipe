@@ -1,6 +1,7 @@
 module iopipe.json.serialize;
 import iopipe.json.parser;
 import iopipe.json.dom;
+public import iopipe.json.common;
 import iopipe.traits;
 import iopipe.bufpipe;
 import std.range.primitives;
@@ -26,7 +27,7 @@ void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string f
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (__traits(isStaticArray, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
     auto jsonItem = tokenizer.next;
     jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -41,8 +42,9 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (__traits(i
             jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
         }
         first = false;
-        deserializeImpl(tokenizer, elem);
-        tokenizer.releaseParsed();
+        deserializeImpl(tokenizer, elem, relPol);
+        if(relPol == ReleasePolicy.afterMembers)
+            tokenizer.releaseParsed();
     }
 
     // verify we got an end array element
@@ -50,12 +52,12 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (__traits(i
     jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == enum))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == enum))
 {
     // enums are special, we can serialize them based on strings or integral values
     auto jsonItem = tokenizer.next;
     import std.conv : to;
-    static if(is(T : int))
+    static if(is(T : long))
     {
         // int based enum. If the next token is a number, parse it and convert
         if(jsonItem.token == JSONToken.Number)
@@ -74,7 +76,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == en
 }
 
 // TODO: should deal with writable input ranges and output ranges
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     auto jsonItem = tokenizer.next;
     jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -94,9 +96,10 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicA
     while(true)
     {
         typeof(item[0]) elem;
-        deserializeImpl(tokenizer, elem);
+        deserializeImpl(tokenizer, elem, relPol);
         app ~= elem;
-        tokenizer.releaseParsed();
+        if(relPol == ReleasePolicy.afterMembers)
+            tokenizer.releaseParsed();
         jsonItem = tokenizer.next;
         if(jsonItem.token == JSONToken.ArrayEnd)
             break;
@@ -107,7 +110,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isDynamicA
     item = app.data;
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isNumeric!T)
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isNumeric!T)
 {
     import std.conv : parse;
     import std.format : format;
@@ -132,7 +135,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isNumeric!
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == bool))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == bool))
 {
     import std.conv : parse;
     import std.format : format;
@@ -152,7 +155,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == bo
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isSomeString!T)
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isSomeString!T)
 {
     // Use phobos `to`, we want to duplicate the string if necessary.
     import std.conv : to;
@@ -176,12 +179,12 @@ private template SerializableMembers(T)
     enum SerializableMembers = Filter!(WithoutIgnore, FieldNameTuple!T);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    item.fromJSON(tokenizer);
+    item.fromJSON(tokenizer, relPol);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     // check to see if any member is defined as the representation
     import std.traits;
@@ -189,7 +192,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (is(T == st
     static if(representers.length > 0)
     {
         static assert(representers.length == 1, "Only one field can be used to represent an object");
-        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
+        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])), relPol);
     }
     else
     {
@@ -232,7 +235,7 @@ OBJ_MEMBER_SWITCH:
                     static foreach(i, m; members)
                     {
                     case m:
-                        tokenizer.deserializeImpl(__traits(getMember, item, m));
+                        tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
                         visited[i] = true;
                         break OBJ_MEMBER_SWITCH;
                     }
@@ -241,7 +244,8 @@ OBJ_MEMBER_SWITCH:
                     import std.format : format;
                     throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
                 }
-                tokenizer.releaseParsed();
+                if(relPol == ReleasePolicy.afterMembers)
+                    tokenizer.releaseParsed();
                 jsonItem = tokenizer.next();
             }
             // ensure all members visited
@@ -263,14 +267,14 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
 {
-    item = tokenizer.parseJSON!(typeof(T.str));
+    item = tokenizer.parseJSON!(typeof(T.str))(relPol);
 }
 
 // if type is Nullable, first check for JSONToken.Null, and if not, try and
 // parse real item.
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isInstanceOf!(Nullable, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(Nullable, T))
 {
     if(tokenizer.peek == JSONToken.Null)
     {
@@ -281,16 +285,16 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item) if (isInstance
     else
     {
         typeof(item.get()) result;
-        deserializeImpl(tokenizer, result);
+        deserializeImpl(tokenizer, result, relPol);
         item = result;
     }
 }
 
 // Given a JSON tokenizer, deserialize the given type from the JSON data.
-T deserialize(T, JT)(ref JT tokenizer) if (isInstanceOf!(JSONTokenizer, JT))
+T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
-    deserializeImpl(tokenizer, result);
+    deserializeImpl(tokenizer, result, relPol);
     return result;
 }
 
@@ -298,19 +302,19 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
     auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
-    return tokenizer.deserialize!T;
+    return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
 
-void deserialize(T, JT)(ref JT tokenizer, ref T item) if (isInstanceOf!(JSONTokenizer, JT))
+void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    deserializeImpl(tokenizer, item);
+    deserializeImpl(tokenizer, item, relPol);
 }
 
 void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
     auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
-    return tokenizer.deserialize(item);
+    return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
 }
 
 // TODO: this really is pure, but there is a cycle in the DOM parser so
