@@ -870,6 +870,44 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
         }
     }
 
+    // Parse until it finds a specific member/submember. The assumptino is that
+    // the current item is an object start.
+    //
+    // Returns true if the specified submember was found, and the parser is
+    // queued to parse the value of that member.
+    //
+    // Returns false if the object was searched, but the submember could not be
+    // found.
+    //
+    // Also returns false if this is not an object.
+    bool parseTo(string[] submember...)
+    {
+        import std.algorithm : equal;
+        while(submember.length > 0)
+        {
+            // jump into the first member.
+            if(peek != JSONToken.ObjectStart)
+                return false;
+            cast(void)next;
+            if(peek != JSONToken.String)
+                return false;
+            auto item = next;
+            while(!item.data(chain).equal(submember[0]))
+            {
+                skipItem();
+                if(peek == JSONToken.ObjectEnd)
+                    return false;
+            }
+            // found the item
+            if(peek != JSONToken.Colon)
+                return false;
+            item = next;
+            submember = submember[1 .. $];
+        }
+
+        return true;
+    }
+
     // where are we in the buffer
     @property size_t position()
     {

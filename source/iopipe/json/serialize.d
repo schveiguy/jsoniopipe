@@ -10,14 +10,35 @@ import std.traits;
 import std.typecons : Nullable;
 
 // define some UDAs to affect serialization
-struct SerializeAs {}
-struct Ignore {}
-struct Optional {}
+struct IgnoredMembers { string[] ignoredMembers; }
 
-SerializeAs serializeAs() { return SerializeAs.init; }
-Ignore ignore() { return Ignore.init; }
-Optional optional() { return Optional.init; }
+/**
+ * This UDA will cause the specified member to be substituted in for
+ * serializing a struct or class type.
+ */
+enum serializeAs;
 
+/**
+ * Ignore the member when serializing a struct or class.
+ */
+enum ignore;
+
+/**
+ * If this member is not present when deserializing a type, do not consider it
+ * an error.
+ */
+enum optional;
+
+/**
+ * Apply this to a struct or class for members of a JSON object that you want
+ * to be ignored. For example, metadata that aids in deciding a concrete class
+ * type.
+ */
+IgnoredMembers ignoredMembers(string[] m...) { return IgnoredMembers(m.dup); }
+
+/**
+ * Expect the given JSONItem to be a specific token.
+ */
 void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
@@ -169,14 +190,25 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     item = jsonItem.data(tokenizer.chain).to!T;
 }
 
-// TODO: need to ignore function members
-// TODO: need to use UDAs to drive how this works
 private template SerializableMembers(T)
 {
     import std.traits;
     import std.meta;
-    enum WithoutIgnore(string s) = !hasUDA!(__traits(getMember, T, s), Ignore());
-    enum SerializableMembers = Filter!(WithoutIgnore, FieldNameTuple!T);
+    enum WithoutIgnore(string s) = !hasUDA!(__traits(getMember, T, s), ignore);
+    static if(is(T == struct))
+        enum SerializableMembers = Filter!(WithoutIgnore, FieldNameTuple!T);
+    else
+        enum SerializableMembers = Filter!(WithoutIgnore, staticMap!(FieldNameTuple, T, BaseClassesTuple!T));
+}
+
+private template AllIgnoredMembers(T)
+{
+    import std.traits;
+    import std.meta;
+    static if(is(T == struct))
+        enum AllIgnoredMembers = getUDAs!(T, IgnoredMembers);
+    else
+        enum AllIgnoredMembers = staticMap!(ApplyRight!(getUDAs, IgnoredMembers), T, BaseClassesTuple!T);
 }
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
@@ -184,11 +216,95 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     item.fromJSON(tokenizer, relPol);
 }
 
+void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
+{
+    // expect an object in JSON. We want to deserialize the JSON data
+    alias members = SerializableMembers!T;
+    alias ignoredMembers = AllIgnoredMembers!T;
+
+    // TODO use bit array instead and core.bitop
+    //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
+    bool[members.length] visited;
+
+    // any members that are optional, mark as already visited
+    static foreach(idx, m; members)
+    {
+        static if(hasUDA!(__traits(getMember, T, m), optional))
+            visited[idx] = true;
+    }
+
+    auto jsonItem = tokenizer.next;
+    jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+
+    // look at each string, then parse the given values
+    jsonItem = tokenizer.next();
+    while(jsonItem.token != JSONToken.ObjectEnd)
+    {
+        if(jsonItem.token == JSONToken.Comma)
+            jsonItem = tokenizer.next();
+
+        jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
+        auto name = jsonItem.data(tokenizer.chain);
+
+        jsonItem = tokenizer.next();
+        jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
+OBJ_MEMBER_SWITCH:
+        switch(name)
+        {
+            static foreach(i, m; members)
+            {
+            case m:
+                tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                visited[i] = true;
+                break OBJ_MEMBER_SWITCH;
+            }
+
+            static if(ignoredMembers.length > 0)
+            {
+                static foreach(m; ignoredMembers)
+                {
+                    static foreach(s; m.ignoredMembers)
+                    {
+                    case s:
+                    }
+                }
+                // ignored members are ignored if they show up
+                tokenizer.skipItem();
+                break OBJ_MEMBER_SWITCH;
+            }
+
+        default:
+            import std.format : format;
+            throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
+        }
+        // shut up compiler
+        static if(members.length > 0 || ignoredMembers.length > 0)
+        {
+            if(relPol == ReleasePolicy.afterMembers)
+                tokenizer.releaseParsed();
+            jsonItem = tokenizer.next();
+        }
+    }
+    // ensure all members visited
+    static if(members.length)
+    {
+        import std.algorithm : canFind, map, filter;
+        if(visited[].canFind(false))
+        {
+            // this is a bit ugly, but gives a nicer message.
+            static immutable marr = [members];
+            import std.format;
+            import std.range : enumerate;
+            throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+        }
+    }
+}
+
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     // check to see if any member is defined as the representation
     import std.traits;
-    alias representers = getSymbolsByUDA!(T, SerializeAs());
+    alias representers = getSymbolsByUDA!(T, serializeAs);
     static if(representers.length > 0)
     {
         static assert(representers.length == 1, "Only one field can be used to represent an object");
@@ -196,74 +312,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
     else
     {
-        // expect an object. We want to deserialize the JSON data
-        alias members = SerializableMembers!T;
-        // TODO use bit array instead and core.bitop
-        //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
-        bool[members.length] visited;
-
-        // any members that are optional, mark as already visited
-        static foreach(idx, m; members)
-        {
-            static if(hasUDA!(__traits(getMember, T, m), Optional()))
-                visited[idx] = true;
-        }
-
-        auto jsonItem = tokenizer.next;
-        jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
-
-        // look at each string, then parse the given values
-        jsonItem = tokenizer.next();
-        static if(members.length)
-        {
-            while(jsonItem.token != JSONToken.ObjectEnd)
-            {
-                if(jsonItem.token == JSONToken.Comma)
-                {
-                    jsonItem = tokenizer.next();
-                    continue;
-                }
-
-                jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-                auto name = jsonItem.data(tokenizer.chain);
-
-                jsonItem = tokenizer.next();
-                jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
-OBJ_MEMBER_SWITCH:
-                switch(name)
-                {
-                    static foreach(i, m; members)
-                    {
-                    case m:
-                        tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
-                        visited[i] = true;
-                        break OBJ_MEMBER_SWITCH;
-                    }
-
-                default:
-                    import std.format : format;
-                    throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
-                }
-                if(relPol == ReleasePolicy.afterMembers)
-                    tokenizer.releaseParsed();
-                jsonItem = tokenizer.next();
-            }
-            // ensure all members visited
-            import std.algorithm : canFind, map, filter;
-            if(visited[].canFind(false))
-            {
-                // this is a bit ugly, but gives a nicer message.
-                static immutable marr = [members];
-                import std.format;
-                import std.range : enumerate;
-                throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
-            }
-        }
-        else
-        {
-            // no members, expect an object end
-            jsonExpect(jsonItem, JSONToken.ObjectEnd, "Expecting end of memberless object " ~ T.stringof);
-        }
+        deserializeAllMembers(tokenizer, item, relPol);
     }
 }
 
@@ -287,6 +336,24 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         typeof(item.get()) result;
         deserializeImpl(tokenizer, result, relPol);
         item = result;
+    }
+}
+
+// deserialize a class or interface. The class must either provide a static
+// function that returns the deserialized type, or have been registered with
+// the JSON serialization system.
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if ((is(T == class) || is(T == interface)))
+{
+    import std.stdio;
+    static if(__traits(hasMember, T, "fromJSON") && is(typeof(item = T.fromJSON(tokenizer, relPol))))
+    {
+        item = T.fromJSON(tokenizer, relPol);
+    }
+    else
+    {
+        auto t = new T();
+        deserializeAllMembers(tokenizer, t, relPol);
+        item = t;
     }
 }
 
@@ -329,6 +396,18 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
         bool b;
     }
 
+    static class C
+    {
+        int x;
+        string y;
+    }
+
+    static class D : C
+    {
+        double d;
+        bool b;
+    }
+
     auto json = q"{
         {
             "x" : 5,
@@ -338,6 +417,12 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
         }}";
 
     auto s = json.deserialize!S;
+    assert(s.x == 5);
+    assert(s.y == "foo");
+    assert(s.d == 8.5);
+    assert(s.b);
+
+    auto c = json.deserialize!D;
     assert(s.x == 5);
     assert(s.y == "foo");
     assert(s.d == 8.5);
@@ -447,6 +532,7 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
     }
 }
 
+
 // test attributes and empty struct
 unittest
 {
@@ -476,6 +562,62 @@ unittest
     assert(arr[1].s == "there");
 }
 
+// test serializing of class hierarchy
+unittest
+{
+    @ignoredMembers("type")
+    static class C
+    {
+        int x;
+        static C fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
+        {
+            C doDeserialize(T)()
+            {
+                tokenizer.rewind();
+                tokenizer.endCache();
+                auto item = new T;
+                tokenizer.deserializeAllMembers(item, relPol);
+                return item;
+            }
+
+            tokenizer.startCache();
+            if(tokenizer.parseTo("type"))
+            {
+                int type;
+                tokenizer.deserialize(type);
+                switch(type)
+                {
+                case 0:
+                    // it's a C
+                    return doDeserialize!C;
+                case 1:
+                    return doDeserialize!D;
+                case 2:
+                    return doDeserialize!E;
+                default:
+                    assert(false, "Unknown type");
+                }
+            }
+            assert(false, "Couldn't find type");
+        }
+    }
+
+    static class D : C
+    {
+        string s;
+    }
+
+    static class E : C
+    {
+        double y;
+    }
+
+    auto msg1 = `[{"type" : 0, "x" : 1}, {"type" : 1, "x" : 2, "s" : "hi"}, {"type" : 2, "x" : 3, "y": 5.6}]`;
+
+    auto cArr = msg1.deserialize!(C[]);
+    assert(cArr.length == 3);
+}
+
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
 {
     auto arr = val;
@@ -503,6 +645,23 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     w(`"`);
     put(w, val);
     w(`"`);
+}
+
+void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
+{
+    // serialize as an object
+    bool first = true;
+    static foreach(n; SerializableMembers!T)
+    {
+        if(first)
+            first = false;
+        else
+            w(", ");
+        w(`"`);
+        w(n);
+        w(`" : `);
+        serializeImpl(w, __traits(getMember, val, n));
+    }
 }
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
@@ -561,9 +720,9 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     {
         val.toJSON(w);
     }
-    else static if(getSymbolsByUDA!(T, SerializeAs()).length > 0)
+    else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
     {
-        alias representers = getSymbolsByUDA!(T, SerializeAs());
+        alias representers = getSymbolsByUDA!(T, serializeAs);
         // serialize as the single item
         static assert(representers.length == 1, "Only one field can be used to represent an object");
         serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
@@ -585,20 +744,24 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     }
     else
     {
-        // serialize as an object
         w("{");
-        bool first = true;
-        static foreach(n; SerializableMembers!T)
-        {
-            if(first)
-                first = false;
-            else
-                w(", ");
-            w(`"`);
-            w(n);
-            w(`" : `);
-            serializeImpl(w, __traits(getMember, val, n));
-        }
+        serializeAllMembers(w, val);
+        w("}");
+    }
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
+{
+    // If the class defines a method toJSON, then use that. Otherwise, we will
+    // just serialize the data as we can.
+    static if(__traits(hasMember, T, "toJSON"))
+    {
+        val.toJSON(w);
+    }
+    else
+    {
+        w("{");
+        serializeAllMembers(w, val);
         w("}");
     }
 }
@@ -650,7 +813,7 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 
     static if(isInstanceOf!(JSONValue, T))
     {
-        // json value. Check to see if it's an object or array. If not, write the 
+        // json value. Check to see if it's an object or array. If not, write the
         bool needClosingBrace =
             !(val.type == JSONType.Obj || val.type == JSONType.Array);
         if(needClosingBrace)
@@ -666,7 +829,7 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
         else
             return chain.serialize!relOnWrite(val, offset);
     }
-    else static if(is(T == struct) || isArray!T)
+    else static if(is(T == struct) || isArray!T || is(T == class) || is(T == interface))
     {
         enum needClosingBrace = false;
     }
@@ -755,4 +918,55 @@ unittest
     auto u = U(T("hello", 1));
     auto str2 = u.serialize;
     assert(str2 == `{"t" : "hello"}`, str2);
+}
+
+unittest
+{
+    // serialization of classes
+    static class C
+    {
+        int x;
+    }
+
+    static class D : C
+    {
+        string s;
+        void toJSON(scope void delegate(const(char)[]) w)
+        {
+            w("{");
+            serializeAllMembers(w, this);
+            w("}");
+        }
+    }
+
+    static class E : D
+    {
+        double d;
+        override void toJSON(scope void delegate(const(char)[]) w)
+        {
+            w("{");
+            serializeAllMembers(w, this);
+            w("}");
+        }
+    }
+
+    auto c = new C;
+    c.x = 1;
+    auto cstr = c.serialize;
+    assert(cstr == `{"x" : 1}`, cstr);
+
+    auto d = new D;
+    d.x = 2;
+    d.s = "str";
+    auto dstr = d.serialize;
+    assert(dstr == `{"s" : "str", "x" : 2}`, dstr);
+
+    auto e = new E;
+    e.x = 3;
+    e.s = "foo";
+    e.d = 1.5;
+    auto estr = e.serialize;
+    assert(estr == `{"d" : 1.5, "s" : "foo", "x" : 3}`, estr);
+    d = e;
+    assert(d.serialize == estr);
 }
