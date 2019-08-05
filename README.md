@@ -1,6 +1,6 @@
 # JSON parsing/serialization library for iopipe
 
-This library allows parsing/serializing JSON using the [https://github.com/schveiguy/iopipe](iopipe) library. At the moment, the library itself is quite functional, but the documentation is sorely lacking (for now).
+This library allows parsing/serializing JSON using the [iopipe](https://github.com/schveiguy/iopipe) library. At the moment, the library itself is quite functional, but the documentation is sorely lacking (for now).
 
 Look in the parser module for raw data parsing. Everything else is built on top of this.
 
