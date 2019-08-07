@@ -894,8 +894,13 @@ struct JSONTokenizer(Chain, bool replaceEscapes)
             auto item = next;
             while(!item.data(chain).equal(submember[0]))
             {
-                skipItem();
-                if(peek == JSONToken.ObjectEnd)
+                item = skipItem();
+                if(item.token == JSONToken.ObjectEnd)
+                    return false;
+                else if(item.token == JSONToken.Comma)
+                    item = next;
+                else
+                    // something went wrong.
                     return false;
             }
             // found the item
@@ -1283,6 +1288,16 @@ unittest
     assert(check(parser.next, JSONToken.String, "d"));
     assert(check(parser.skipItem, JSONToken.ObjectEnd, "}"));
     assert(check(parser.skipItem, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.next, JSONToken.EOF, ""));
+    assert(parser.position == jsonData.length);
+
+    // test parseTo
+    parser.rewind;
+    assert(parser.parseTo("b", "d", "hello"));
+    assert(check(parser.next, JSONToken.String, "world"));
+    assert(check(parser.next, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.next, JSONToken.ObjectEnd, "}"));
+    assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
     assert(parser.position == jsonData.length);
 }

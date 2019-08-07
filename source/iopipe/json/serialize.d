@@ -30,6 +30,17 @@ enum ignore;
 enum optional;
 
 /**
+ * if on an enum, this serializes the enum as the base type instead of the enum
+ * name (default).
+ */
+enum enumBaseType;
+
+struct alternateName
+{
+    string name;
+}
+
+/**
  * Apply this to a struct or class for members of a JSON object that you want
  * to be ignored. For example, metadata that aids in deciding a concrete class
  * type.
@@ -73,27 +84,22 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == enum))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy pol) if (is(T == enum))
 {
-    // enums are special, we can serialize them based on strings or integral values
-    auto jsonItem = tokenizer.next;
+    // enums are special, we can serialize them based on the enum name, or the
+    // base type.
     import std.conv : to;
-    static if(is(T : long))
+    static if(hasUDA!(T, enumBaseType))
     {
-        // int based enum. If the next token is a number, parse it and convert
-        if(jsonItem.token == JSONToken.Number)
-        {
-            // it's a number, parse as an integer, and see if it converts.
-            auto intval = jsonItem.data(tokenizer.chain).to!int;
-            // parse into the enum.
-            item = intval.to!T;
-            return;
-        }
+        deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item), pol);
     }
-
-    // convert to the enum via the string name
-    jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
-    item = jsonItem.data(tokenizer.chain).to!T;
+    else
+    {
+        // convert to the enum via the string name
+        auto jsonItem = tokenizer.next;
+        jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
+        item = jsonItem.data(tokenizer.chain).to!T;
+    }
 }
 
 // TODO: should deal with writable input ranges and output ranges
@@ -252,12 +258,18 @@ OBJ_MEMBER_SWITCH:
         switch(name)
         {
             static foreach(i, m; members)
-            {
-            case m:
+            {{
+                static if(hasUDA!(__traits(getMember, item, m), alternateName))
+                {
+                    enum jsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
+                }
+                else
+                    enum jsonName = m;
+            case jsonName:
                 tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
                 visited[i] = true;
                 break OBJ_MEMBER_SWITCH;
-            }
+            }}
 
             static if(ignoredMembers.length > 0)
             {
@@ -344,8 +356,10 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 // the JSON serialization system.
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if ((is(T == class) || is(T == interface)))
 {
-    import std.stdio;
-    static if(__traits(hasMember, T, "fromJSON") && is(typeof(item = T.fromJSON(tokenizer, relPol))))
+    // NOTE: checking to see if it's callable doesn't help, because there could
+    // be a bug, and in that case, it tries the other branch.
+    static if(__traits(hasMember, T, "fromJSON"))
+        // && is(typeof(item = T.fromJSON(tokenizer, relPol))))
     {
         item = T.fromJSON(tokenizer, relPol);
     }
@@ -624,7 +638,23 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     serializeImpl(w, val[]);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isDynamicArray!T && !isSomeString!T)
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
+{
+    // enums are special, serialize based on the name. Unless there's a UDA
+    // saying to serialize as the base type.
+    static if(hasUDA!(T, enumBaseType))
+    {
+        serializeImpl(w, *cast(OriginalType!T*)&val);
+    }
+    else
+    {
+        import std.conv;
+        auto enumName = val.to!string;
+        serializeImpl(w, enumName);
+    }
+}
+
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     // open brace
     w("[");
