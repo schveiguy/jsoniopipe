@@ -359,8 +359,8 @@ int parseString(bool replaceEscapes = true, Chain)(ref Chain c, ref size_t pos, 
                     // just make sure it's a valid escape character
                     switch(elem)
                     {
-                    case '\\': case '/': case 'n': case 'b':
-                    case 'f': case 'r': case 't':
+                    case '\\': case '/': case'"': case 'n':
+                    case 'b': case 'f': case 'r': case 't':
                         break;
                     default:
                         return -1;

@@ -35,6 +35,13 @@ enum optional;
  */
 enum enumBaseType;
 
+/**
+ * This UDA, when applied to a JSONValue type member, will consume all items
+ * that do not have a member name in that aggregate. Only one of these should
+ * be in a type.
+ */
+enum extras;
+
 struct alternateName
 {
     string name;
@@ -237,6 +244,18 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
     {
         static if(hasUDA!(__traits(getMember, T, m), optional))
             visited[idx] = true;
+        static if(hasUDA!(__traits(getMember, T, m), extras))
+        {
+            // this is the extras member, it holds any extra data that was not
+            // specified as a member.
+            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+            enum extrasMember = m;
+            // initialize it for use
+            __traits(getMember, item, m).type = JSONType.Obj;
+            __traits(getMember, item, m).object = null;
+            // extras is always optional.
+            visited[idx] = true;
+        }
     }
 
     auto jsonItem = tokenizer.next;
@@ -258,18 +277,19 @@ OBJ_MEMBER_SWITCH:
         switch(name)
         {
             static foreach(i, m; members)
-            {{
-                static if(hasUDA!(__traits(getMember, item, m), alternateName))
-                {
-                    enum jsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
-                }
-                else
-                    enum jsonName = m;
-            case jsonName:
-                tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
-                visited[i] = true;
-                break OBJ_MEMBER_SWITCH;
-            }}
+                static if(!hasUDA!(__traits(getMember, item, m), extras))
+                {{
+                    static if(hasUDA!(__traits(getMember, item, m), alternateName))
+                    {
+                        enum jsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
+                    }
+                    else
+                        enum jsonName = m;
+                case jsonName:
+                    tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                    visited[i] = true;
+                    break OBJ_MEMBER_SWITCH;
+                }}
 
             static if(ignoredMembers.length > 0)
             {
@@ -286,8 +306,20 @@ OBJ_MEMBER_SWITCH:
             }
 
         default:
-            import std.format : format;
-            throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
+            static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+            {{
+                // any extras should be put in here
+                import std.conv : to;
+                JSONValue!SType newItem;
+                tokenizer.deserializeImpl(newItem, relPol);
+                __traits(getMember, item, extrasMember).object[name.to!(immutable(SType))] = newItem;
+                break;
+            }}
+            else
+            {
+                import std.format : format;
+                throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
+            }
         }
         // shut up compiler
         static if(members.length > 0 || ignoredMembers.length > 0)
@@ -544,6 +576,24 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
         assert("d" in v.object);
         assert("b" in v.object);
     }
+
+    // ensure extras works
+    static struct S4
+    {
+        int x;
+        @extras JSONValue!string extraData;
+    }
+
+    auto s4 = json.deserialize!S4;
+    assert(s4.x == 5);
+    assert(s4.extraData.type == JSONType.Obj);
+    assert(s4.extraData.object.length == 3);
+    assert(s4.extraData.object["y"].type == JSONType.String);
+    assert(s4.extraData.object["y"].str == "foo");
+    assert(s4.extraData.object["d"].type == JSONType.Floating);
+    assert(s4.extraData.object["d"].floating == 8.5);
+    assert(s4.extraData.object["b"].type == JSONType.Bool);
+    assert(s4.extraData.object["b"].boolean == true);
 }
 
 
