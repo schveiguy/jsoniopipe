@@ -144,7 +144,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     item = app.data;
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isNumeric!T)
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
 {
     import std.conv : parse;
     import std.format : format;
@@ -846,7 +846,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isNumeric!T)
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
 {
     import std.format;
     formattedWrite(w, "%s", val);
@@ -1049,4 +1049,16 @@ unittest
     assert(estr == `{"d" : 1.5, "s" : "foo", "x" : 3}`, estr);
     d = e;
     assert(d.serialize == estr);
+}
+
+unittest
+{
+    // test serializing enums
+    enum X { a, b, c }
+    static struct S { X x; }
+    auto s = S(X.b);
+    auto sstr = s.serialize;
+    assert(sstr == `{"x" : "b"}`);
+    auto s2 = sstr.deserialize!S;
+    assert(s2.x == X.b);
 }
