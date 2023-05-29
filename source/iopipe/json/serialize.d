@@ -160,7 +160,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     auto str = jsonItem.data(tokenizer.chain);
     static if(isIntegral!T)
     {
-        if(jsonItem.hint != JSONParseHint.Int)
+        if(jsonItem.hint != JSONParseHint.Int &&
+                !(tokenizer.config.JSON5 && jsonItem.hint == JSONParseHint.Hex))
         {
             throw new Exception(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data(tokenizer.chain)));
         }
@@ -184,7 +185,35 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 
     // get the string from the buffer that contains the number
     auto window = jsonItem.data(tokenizer.chain);
-    item = window.parse!T;
+    static if(isIntegral!T && tokenizer.config.JSON5)
+    {
+        if(jsonItem.hint == JSONParseHint.Hex)
+        {
+            // have to do this somewhat manually, as there is no function to
+            // properly parse the "0x" in phobos
+            int sign = 1;
+            switch(window[0])
+            {
+                case '0':
+                    window = window[2 .. $];
+                    break;
+                case '-':
+                    sign = -1;
+                    window = window[3 .. $];
+                    break;
+                case '+':
+                    window = window[3 .. $];
+                    break;
+                default:
+                    assert(false, "invalid hex number detected! " ~ window);
+            }
+            item = window.parse!T(16) * sign;
+        }
+        else
+            item = window.parse!T;
+    }
+    else
+        item = window.parse!T;
     if(!window.empty)
     {
         throw new Exception(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data(tokenizer.chain), window));
@@ -1105,7 +1134,7 @@ unittest
 {
     auto jsonStr = `
     {
-        obj1: { a: .123, b: /*comment!*/ 'str', c: NaN, d: +Infinity,},
+        obj1: { a: .123, b: /*comment!*/ 'str', c: NaN, d: +Infinity, e: -0x42,},
         arr: ['abc', "def",],
     }`;
     // try with all the JSON5 configs
@@ -1114,6 +1143,7 @@ unittest
         string b;
         double c;
         real d;
+        int e;
     }
     static struct S2 {
         S1 obj1;
@@ -1135,6 +1165,7 @@ unittest
         assert(s2.obj1.b == "str");
         assert(isNaN(s2.obj1.c));
         assert(s2.obj1.d == real.infinity);
+        assert(s2.obj1.e == -0x42);
         assert(s2.arr == ["abc", "def"]);
     }}
 } 

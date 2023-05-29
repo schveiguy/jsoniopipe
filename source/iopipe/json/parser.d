@@ -25,7 +25,7 @@ enum JSONToken : char
     Comma = ',',       /// ,
     ArrayStart = '[',  /// [
     ArrayEnd = ']',    /// ]
-    Number = '0',      /// - or 0-9, (or + or Inifinty in json5)
+    Number = '0',      /// - or 0-9, (Also + or Inifinty or NaN in json5)
     True = 't',        /// true
     False = 'f',       /// false
     Null = 'n',        /// null
@@ -65,8 +65,8 @@ enum JSONParseHint : ubyte
     Float,   /// number has decimal place, but no exponent
     Exp,     /// float number has exponent.
     Hex,     /// integer in hex format (JSON5 only)
-    Infinity,/// positive or negative infinity. (JOSN5 only)
-    NaN,     /// positive or negative NaN. (JOSN5 only)
+    Infinity,/// positive or negative infinity. (JSON5 only)
+    NaN,     /// positive or negative NaN. (JSON5 only)
     Escapes, /// string has escapes
 }
 
