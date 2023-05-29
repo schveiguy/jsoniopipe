@@ -197,7 +197,7 @@ auto parseJSON(SType = void, Chain)(Chain chain) if (isIopipe!Chain && is(SType 
 auto parseJSON(SType, Chain)(Chain chain) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
-    auto tokenizer = (chain).jsonTokenizer!(shouldReplaceEscapes);
+    auto tokenizer = (chain).jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.parseJSON!SType(ReleasePolicy.afterMembers);
 }
 
