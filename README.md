@@ -9,3 +9,14 @@ The dom module contains `JSONValue`, which is a JSON specific object for contain
 The serialize module contains functions to serialize and deserialize custom types to and from a text iopipe in JSON format.
 
 Look for the documentation to be filled out in the near future, and some more functionality to be added as needed.
+
+## JSON5 support
+
+The library now supports JSON5 parsing and deserialization! If you want to read more about JSON5, it is here: https://json5.org/
+
+Quick differences:
+* comments are allowed
+* hex numbers
+* no need to quote member names
+* single-quote strings are allowed
+* trailing commas are allowed
