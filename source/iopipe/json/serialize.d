@@ -68,7 +68,7 @@ void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string f
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
     bool first = true;
@@ -77,7 +77,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         if(!first)
         {
             // verify there's a comma
-            jsonItem = tokenizer.next;
+            jsonItem = tokenizer.nextSignificant;
             jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
         }
         first = false;
@@ -87,7 +87,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 
     // verify we got an end array element
-    jsonItem = tokenizer.next;
+    jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
@@ -103,7 +103,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     else
     {
         // convert to the enum via the string name
-        auto jsonItem = tokenizer.next;
+        auto jsonItem = tokenizer.nextSignificant;
         jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
         item = jsonItem.data(tokenizer.chain).to!T;
     }
@@ -112,7 +112,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 // TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
     import std.array : Appender;
@@ -122,7 +122,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     if(tokenizer.peek == JSONToken.ArrayEnd)
     {
         // parse it off
-        jsonItem = tokenizer.next;
+        jsonItem = tokenizer.nextSignificant;
         // nothing left to do
         return;
     }
@@ -134,10 +134,16 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         app ~= elem;
         if(relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
-        jsonItem = tokenizer.next;
+        jsonItem = tokenizer.nextSignificant;
         if(jsonItem.token == JSONToken.ArrayEnd)
             break;
         jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
+        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
+        {
+            // was a trailing comma. parse the array end and break
+            tokenizer.next;
+            break;
+        }
     }
 
     // fill in the data.
@@ -148,7 +154,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 {
     import std.conv : parse;
     import std.format : format;
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.Number, "Parsing " ~ T.stringof);
 
     auto str = jsonItem.data(tokenizer.chain);
@@ -157,6 +163,22 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
         if(jsonItem.hint != JSONParseHint.Int)
         {
             throw new Exception(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data(tokenizer.chain)));
+        }
+    }
+    else
+    {
+        static if(tokenizer.config.JSON5)
+        {
+            // if it's +/- infinity, phobos doesn't parse this properly.
+            if(jsonItem.hint == JSONParseHint.Infinity)
+            {
+                auto window = jsonItem.data(tokenizer.chain);
+                if(window[0] == '-')
+                    item = -T.infinity;
+                else
+                    item = T.infinity;
+                return;
+            }
         }
     }
 
@@ -173,7 +195,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 {
     import std.conv : parse;
     import std.format : format;
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     if(jsonItem.token == JSONToken.True)
     {
         item = true;
@@ -195,7 +217,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     import std.conv : to;
     import std.format : format;
 
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
 
     // this should not fail unless the data is non-unicode
@@ -258,20 +280,35 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
     }
 
-    auto jsonItem = tokenizer.next;
+    auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
 
     // look at each string, then parse the given values
-    jsonItem = tokenizer.next();
+    jsonItem = tokenizer.nextSignificant();
     while(jsonItem.token != JSONToken.ObjectEnd)
     {
         if(jsonItem.token == JSONToken.Comma)
-            jsonItem = tokenizer.next();
+        {
+            jsonItem = tokenizer.nextSignificant();
+            static if(tokenizer.config.JSON5)
+            {
+                // JSON5 allows trailing commas
+                if(jsonItem.token == JSONToken.ObjectEnd)
+                    break;
+            }
+        }
 
-        jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
+        static if(tokenizer.config.JSON5)
+        {
+            if(jsonItem.token != JSONToken.String && jsonItem.token != JSONToken.Symbol)
+                jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
+        }
+        else
+            jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
         auto name = jsonItem.data(tokenizer.chain);
+        // TODO: handle names with unicode escapes
 
-        jsonItem = tokenizer.next();
+        jsonItem = tokenizer.nextSignificant();
         jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 OBJ_MEMBER_SWITCH:
         switch(name)
@@ -326,7 +363,7 @@ OBJ_MEMBER_SWITCH:
         {
             if(relPol == ReleasePolicy.afterMembers)
                 tokenizer.releaseParsed();
-            jsonItem = tokenizer.next();
+            jsonItem = tokenizer.nextSignificant();
         }
     }
     // ensure all members visited
@@ -373,7 +410,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     {
         item.nullify;
         // skip the null value
-        cast(void)tokenizer.next;
+        cast(void)tokenizer.nextSignificant;
     }
     else
     {
@@ -414,7 +451,7 @@ T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afte
 T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
-    auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
+    auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
 
@@ -426,7 +463,7 @@ void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = Rel
 void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
-    auto tokenizer = c.jsonTokenizer!(shouldReplaceEscapes);
+    auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
 }
 
@@ -1062,3 +1099,42 @@ unittest
     auto s2 = sstr.deserialize!S;
     assert(s2.x == X.b);
 }
+
+// JSON5 tests
+unittest
+{
+    auto jsonStr = `
+    {
+        obj1: { a: .123, b: /*comment!*/ 'str', c: NaN, d: +Infinity,},
+        arr: ['abc', "def",],
+    }`;
+    // try with all the JSON5 configs
+    static struct S1 {
+        float a;
+        string b;
+        double c;
+        real d;
+    }
+    static struct S2 {
+        S1 obj1;
+        string[] arr;
+    }
+    static foreach(config; [
+            ParseConfig(false, true, false, false),
+            ParseConfig(false, true, true, false),
+            ParseConfig(false, true, false, true),
+            ParseConfig(false, true, true, true),
+            ])
+    {{
+        import std.stdio;
+        scope(failure) stderr.writeln("failing config is ", config);
+        import std.math : isNaN, isClose;
+        auto tokenizer = jsonStr.jsonTokenizer!config;
+        auto s2 = tokenizer.deserialize!S2;
+        assert(s2.obj1.a.isClose(0.123));
+        assert(s2.obj1.b == "str");
+        assert(isNaN(s2.obj1.c));
+        assert(s2.obj1.d == real.infinity);
+        assert(s2.arr == ["abc", "def"]);
+    }}
+} 
