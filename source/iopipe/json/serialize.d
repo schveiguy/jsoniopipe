@@ -277,7 +277,7 @@ private template AllIgnoredMembers(T)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    item.fromJSON(tokenizer, relPol);
+    item = T.fromJSON(tokenizer, relPol);
 }
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
@@ -1169,3 +1169,27 @@ unittest
         assert(s2.arr == ["abc", "def"]);
     }}
 } 
+
+// validate fromJSON works with structs
+unittest
+{
+    static struct S
+    {
+        int x;
+        static S fromJSON(JT)(JT tokenizer, ReleasePolicy relPol)
+        {
+            assert(tokenizer.nextSignificant.token == JSONToken.ObjectStart);
+            auto xname = tokenizer.nextSignificant;
+            assert(xname.token == JSONToken.String && xname.data(tokenizer.chain) == "x");
+            assert(tokenizer.nextSignificant.token == JSONToken.Colon);
+            auto val = tokenizer.nextSignificant;
+            assert(val.token == JSONToken.Number);
+            assert(val.hint == JSONParseHint.Int);
+            assert(tokenizer.nextSignificant.token == JSONToken.ObjectEnd);
+            import std.conv : to;
+            return S(val.data(tokenizer.chain).to!int);
+        }
+    }
+
+    assert(`{"x": 5}`.deserialize!S.x == 5);
+}
