@@ -85,7 +85,7 @@ void main(string[] args)
             putStr("***ERROR***");
             return;
 	case Symbol, Comment, Space:
-	    break;
+	    assert(0);
         }
 
         item = parser.next;
