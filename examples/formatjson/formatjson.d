@@ -1,3 +1,5 @@
+import std.io;
+import std.typecons: refCounted;
 import iopipe.stream;
 import iopipe.bufpipe;
 import iopipe.textpipe;
@@ -7,7 +9,7 @@ import iopipe.buffer;
 
 void main(string[] args)
 {
-    auto parser = openDev(args[1]).bufd.assumeText.jsonTokenizer;
+    auto parser = File(args[1]).refCounted.bufd.assumeText.jsonTokenizer;
 
     //import std.mmfile;
     //scope mmf = new MmFile(args[1]);
@@ -16,7 +18,7 @@ void main(string[] args)
 
     auto outputter = bufd!(char).push!(c => c
                                 .encodeText!(UTFType.UTF8)
-                                .outputPipe(openDev(1)));
+                                .outputPipe(File(1).refCounted));
     
     int spacing;
     enum indent = 4;
