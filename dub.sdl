@@ -10,4 +10,5 @@ subPackage {
    targetType "executable"
    sourcePaths "examples/formatjson"
    dependency "jsoniopipe" version="*"
+   dependency "io" version="*"
 }
