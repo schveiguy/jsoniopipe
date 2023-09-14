@@ -1,4 +1,5 @@
 import std.io;
+import std.io.driver;
 import iopipe.refc: refCounted;
 import iopipe.stream;
 import iopipe.bufpipe;
@@ -18,7 +19,7 @@ void main(string[] args)
 
     auto outputter = bufd!(char).push!(c => c
                                 .encodeText!(UTFType.UTF8)
-                                .outputPipe(File(1).refCounted));
+                                .outputPipe(File(stdout).refCounted));
     
     int spacing;
     enum indent = 4;
