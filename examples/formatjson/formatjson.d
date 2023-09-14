@@ -1,5 +1,5 @@
 import std.io;
-import std.typecons: refCounted;
+import iopipe.refc: refCounted;
 import iopipe.stream;
 import iopipe.bufpipe;
 import iopipe.textpipe;
