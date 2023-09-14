@@ -7,7 +7,7 @@ import iopipe.buffer;
 
 void main(string[] args)
 {
-    auto parser = openDev(args[1]).bufd.assumeText.jsonTokenizer!false;
+    auto parser = openDev(args[1]).bufd.assumeText.jsonTokenizer;
 
     //import std.mmfile;
     //scope mmf = new MmFile(args[1]);
@@ -82,6 +82,8 @@ void main(string[] args)
         case EOF:
             putStr("***ERROR***");
             return;
+	case Symbol, Comment, Space:
+	    break;
         }
 
         item = parser.next;
