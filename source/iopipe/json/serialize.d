@@ -435,7 +435,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 // parse real item.
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(Nullable, T))
 {
-    if(tokenizer.peek == JSONToken.Null)
+    if(tokenizer.peekSignificant == JSONToken.Null)
     {
         item.nullify;
         // skip the null value
@@ -449,9 +449,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-// deserialize a class or interface. The class must either provide a static
-// function that returns the deserialized type, or have been registered with
-// the JSON serialization system.
+// deserialize a class or interface. The type must either provide a static
+// function that returns the deserialized type, or have a zero-arg constructor.
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if ((is(T == class) || is(T == interface)))
 {
     // NOTE: checking to see if it's callable doesn't help, because there could
@@ -461,13 +460,39 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     {
         item = T.fromJSON(tokenizer, relPol);
     }
-    else
+    else static if(is(T == class))
     {
-        auto t = new T();
-        deserializeAllMembers(tokenizer, t, relPol);
-        item = t;
+        // peek for a null token.
+        if(tokenizer.peekSignificant == JSONToken.Null)
+        {
+            item = null;
+            cast(void)tokenizer.nextSignificant;
+        }
+        else
+        {
+            auto t = new T();
+            deserializeAllMembers(tokenizer, t, relPol);
+            item = t;
+        }
     }
+    else static assert(false, "Cannot deserialize interface " ~ T.stringof ~ " without a static `fromJson` member");
 }
+
+// deserialize null class member
+unittest
+{
+    static class C {
+        int x;
+    }
+    static struct S {
+        C c;
+    }
+
+    auto s = deserialize!S(`{"c" : null}`);
+    assert(s.c is null);
+}
+
+
 
 // Given a JSON tokenizer, deserialize the given type from the JSON data.
 T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
@@ -898,6 +923,11 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
 {
+    if(val is null)
+    {
+        w("null");
+        return;
+    }
     // If the class defines a method toJSON, then use that. Otherwise, we will
     // just serialize the data as we can.
     static if(__traits(hasMember, T, "toJSON"))
@@ -910,6 +940,35 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
         serializeAllMembers(w, val);
         w("}");
     }
+}
+
+// null class members
+unittest
+{
+    static class C {
+        int x;
+    }
+    static struct S {
+        C c;
+    }
+
+    S s;
+    assert(serialize(s) == `{"c" : null}`);
+}
+
+void serializeImpl(Char)(scope void delegate(const(Char)[]) w, typeof(null) val)
+{
+    w("null");
+}
+
+// allow serializing null
+unittest
+{
+    static struct S {
+        typeof(null) n;
+    }
+    S s;
+    assert(serialize(s) == `{"n" : null}`);
 }
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
