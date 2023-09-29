@@ -150,6 +150,56 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     item = app.data;
 }
 
+// Note, we don't test for string keys here, because the type might not be a
+// string, but parse from a string. However, there's no static check for that here...
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == V[K], V, K) /*&& isSomeString!K*/)
+{
+    assert(is(T == V[K], V, K)); // repeat here, because we need the key and value types.
+
+    auto jsonItem = tokenizer.nextSignificant;
+    jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+
+    auto nextTok = tokenizer.peekSignificant();
+    while(nextTok != JSONToken.ObjectEnd)
+    {
+        if(nextTok == JSONToken.Comma)
+        {
+            jsonItem = tokenizer.nextSignificant(); // skip it
+            nextTok = tokenizer.peekSignificant(); // peek at the next one
+            static if(tokenizer.config.JSON5)
+            {
+                // JSON5 allows trailing commas
+                if(nextTok == JSONToken.ObjectEnd)
+                    break;
+            }
+        }
+
+        K nextKey;
+        tokenizer.deserializeImpl(nextKey, relPol);
+
+        jsonItem = tokenizer.nextSignificant();
+        jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
+
+        V nextVal;
+        tokenizer.deserializeImpl(nextVal, relPol);
+
+        item[nextKey] = nextVal;
+
+        // just peek at the next item
+        nextTok = tokenizer.peekSignificant();
+    }
+    // actually skip the token
+    jsonItem = tokenizer.nextSignificant();
+}
+
+unittest
+{
+    // validate deserializing AAs
+    assert(deserialize!(int[string])(`{"a": 1, "b": 2}`)  == ["a" : 1, "b" : 2]);
+    assert(deserialize!(int[wstring])(`{"a": 1, "b": 2}`) == ["a"w : 1, "b" : 2]);
+    assert(deserialize!(int[dstring])(`{"a": 1, "b": 2}`) == ["a"d : 1, "b" : 2]);
+}
+
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
 {
     import std.conv : parse;
@@ -811,6 +861,72 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     w("]");
 }
 
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
+{
+    assert(is(T == V[K], V, K));
+    enum useKW = !isSomeString!K;
+    // provide a specialized key serialization function if the type is not a string
+    static if(useKW)
+    {
+        // "key write" function. key must always start and end with a quote
+        // (sorry, json5, we are doing it this way for now with AAs)
+        bool keyStart;
+        bool keyEnd;
+        void kw(const(Char)[] str)
+        {
+            if(!keyStart)
+            {
+                // validate that the key starts with "
+                if(str[0] != '"')
+                    throw new Exception("Key in AA of type " ~ T.stringof ~ " must serialize to string that starts with a quote");
+                keyStart = true;
+            }
+            keyEnd = str[$-1] == '"';
+            w(str);
+        }
+    }
+
+    // open brace
+    w("{");
+    bool first = true;
+    foreach(k, v; val)
+    {
+        if(first)
+            first = false;
+        else
+            w(", ");
+        static if(useKW)
+        {
+            serializeImpl(&kw, k);
+
+            // validate the key ended
+            if(!keyEnd)
+                throw new Exception("Key of type " ~ T.stringof ~ " must serialize to a string that ends with a quote");
+        }
+        else
+            serializeImpl(w, k);
+
+        w(" : ");
+
+        serializeImpl(w, v);
+    }
+    w("}");
+}
+
+unittest
+{
+    import std.stdio;
+    auto serialized = serialize(["a" : 1, "b": 2]);
+    assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
+    enum X
+    {
+        a,
+        b
+    }
+    serialized = serialize([X.a : 1, X.b: 2]);
+    assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
+}
+
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isSomeString!T)
 {
     w(`"`);
@@ -998,9 +1114,6 @@ void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
 // elements that are in the buffer. If offset is specified, then that is where
 // the data will begin to be written.
 //
-// if T does not evaluate to an array or object type, then it wraps it in a
-// single-element array to make the result a valid JSON string.
-//
 size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val, size_t offset = 0)
 if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
@@ -1016,39 +1129,9 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
             offset += nWritten;
     }
 
-    static if(isInstanceOf!(JSONValue, T))
-    {
-        // json value. Check to see if it's an object or array. If not, write the
-        bool needClosingBrace =
-            !(val.type == JSONType.Obj || val.type == JSONType.Array);
-        if(needClosingBrace)
-            w("[");
-    }
-    else static if(isInstanceOf!(Nullable, T))
-    {
-        if(val.isNull)
-        {
-            w("[null]");
-            return result;
-        }
-        else
-            return chain.serialize!relOnWrite(val, offset);
-    }
-    else static if(is(T == struct) || isArray!T || is(T == class) || is(T == interface))
-    {
-        enum needClosingBrace = false;
-    }
-    else
-    {
-        enum needClosingBrace = true;
-        w("[");
-    }
-
     // serialize the item, recursively
     serializeImpl(&w, val);
 
-    if(needClosingBrace)
-        w("]");
     return result;
 }
 
@@ -1066,10 +1149,10 @@ string serialize(T)(auto ref T val)
 unittest
 {
     auto str1 = serialize(1);
-    assert(str1 == "[1]");
+    assert(str1 == "1");
     int item1;
     auto strpipe = str1;
-    strpipe.deserialize(*(cast(int[1]*)&item1));
+    strpipe.deserialize(item1);
     assert(item1 == 1);
     auto str2 = serialize([1,2,3,4]);
     assert(str2 == "[1, 2, 3, 4]");

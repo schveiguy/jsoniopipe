@@ -1747,7 +1747,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
                 pushContainer(item.token == ObjectStart);
             }
             else
-                item.token = Error;
+                state = State.End; // no more things should happen
             break;
         case State.First:
             // allow ending of the container
@@ -2048,9 +2048,10 @@ unittest
             verifyJson!(true, true, true)(jsonData.to!(T[]), checkWithReplaceEscapes);
         }
 
+        // We should be able to parse values outside objects.
+        verifyJson!(false, false, false)(q"{123.456}", [Check(Number, "123.456"), Check(EOF, "")]);
+        verifyJson!(false, true, false)(q"{123.456}", [Check(Number, "123.456"), Check(EOF, "")]);
         // now, test to make sure the parser fails properly
-        verifyJson!(false, false, false)(q"{123.456}", [Check(Error, "123.456")]);
-        verifyJson!(false, true, false)(q"{123.456}", [Check(Error, "123.456")]);
         verifyJson!(false, false, false)(q"{{123.456}}", [Check(ObjectStart, "{"), Check(Error, "123.456")]);
         verifyJson!(false, true, false)(q"{{123.456}}", [Check(ObjectStart, "{"), Check(Error, "123.456")]);
     }
