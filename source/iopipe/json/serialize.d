@@ -962,14 +962,35 @@ void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref
     bool first = true;
     static foreach(n; SerializableMembers!T)
     {
-        if(first)
-            first = false;
+        static if(hasUDA!(__traits(getMember, T, n), extras))
+        {
+            // this is the extras member, It should be an object, with all the information inside there.
+            foreach(k, ref v; __traits(getMember, val, n).object)
+            {
+                if(first)
+                    first = false;
+                else
+                    w(", ");
+                w(`"`);
+                w(k);
+                w(`" : `);
+                serializeImpl(w, v);
+            }
+        }
         else
-            w(", ");
-        w(`"`);
-        w(n);
-        w(`" : `);
-        serializeImpl(w, __traits(getMember, val, n));
+        {
+            if(first)
+                first = false;
+            else
+                w(", ");
+            w(`"`);
+            static if(hasUDA!(__traits(getMember, T, n), alternateName))
+                w(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
+            else
+                w(n);
+            w(`" : `);
+            serializeImpl(w, __traits(getMember, val, n));
+        }
     }
 }
 
