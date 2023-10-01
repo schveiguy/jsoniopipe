@@ -845,10 +845,102 @@ unittest
     assert(cArr.length == 3);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
+/**
+ * Used to specify how to format the serialization. Will be passed to any kind
+ * of `toJson` method.
+ */
+enum AggregateStyle {
+    inline, /// do not do newlines between members, everything on one line
+    indent, /// increase indent, stop 
+}
+
+struct IndentedFormatter
+{
+    AggregateStyle objectStyle;
+    AggregateStyle arrayStyle;
+    size_t indentInc = 4;
+    size_t indent = 0;
+
+    private void addIndent(Char)(scope void delegate(const(Char)[]) w)
+    {
+        static immutable char[128] indentBuf = ' ';
+        w("\n");
+        auto i = indent;
+        while(i > 0)
+        {
+            auto n = i > indentBuf.length ? indentBuf.length : i;
+            w(indentBuf[0 .. n]);
+            i -= n;
+        }
+    }
+
+    void newObject(DG)(DG)
+    {
+        if(objectStyle == AggregateStyle.indent)
+            indent += indentInc;
+    }
+
+    void objectMember(Char)(scope void delegate(const(Char)[]) w)
+    {
+        if(objectStyle == AggregateStyle.indent)
+            addIndent(w);
+    }
+
+    void endObject(Char)(scope void delegate(const(Char)[]) w)
+    {
+        if(objectStyle == AggregateStyle.indent)
+        {
+            // do not wrap.
+            if(indentInc > indent)
+                indent = 0;
+            else
+                indent -= indentInc;
+            addIndent(w);
+        }
+    }
+
+    void newArray(DG)(DG)
+    {
+        if(arrayStyle == AggregateStyle.indent)
+            indent += indentInc;
+    }
+
+    void arrayMember(Char)(scope void delegate(const(Char)[]) w)
+    {
+        if(arrayStyle == AggregateStyle.indent)
+            addIndent(w);
+    }
+
+    void endArray(Char)(scope void delegate(const(Char)[]) w)
+    {
+        if(arrayStyle == AggregateStyle.indent)
+        {
+            // do not wrap.
+            if(indentInc > indent)
+                indent = 0;
+            else
+                indent -= indentInc;
+            addIndent(w);
+        }
+    }
+}
+
+// default formatter does nothing
+struct DefaultFormatter
+{
+    void newObject(T)(T dg) {}
+    void objectMember(T)(T dg) {}
+    void endObject(T)(T dg) {}
+
+    void newArray(T)(T dg) {}
+    void arrayMember(T)(T dg) {}
+    void endArray(T)(T dg) {}
+}
+
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, ref T val, ref Fmt formatter) if (__traits(isStaticArray, T))
 {
     auto arr = val;
-    serializeImpl(w, val[]);
+    serializeImpl(w, val[], formatter);
 }
 
 unittest
@@ -858,25 +950,26 @@ unittest
     assert(serialize(arr) == "[1, 2, 3, 4, 5]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, ref T val, ref Fmt formatter) if (is(T == enum))
 {
     // enums are special, serialize based on the name. Unless there's a UDA
     // saying to serialize as the base type.
     static if(hasUDA!(T, enumBaseType))
     {
-        serializeImpl(w, *cast(OriginalType!T*)&val);
+        serializeImpl(w, *cast(OriginalType!T*)&val, formatter);
     }
     else
     {
         import std.conv;
         auto enumName = val.to!string;
-        serializeImpl(w, enumName);
+        serializeImpl(w, enumName, formatter);
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, T val, ref Fmt formatter) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     // open brace
+    formatter.newArray(w);
     w("[");
     bool first = true;
     foreach(ref item; val)
@@ -885,12 +978,14 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isD
             first = false;
         else
             w(", ");
-        serializeImpl(w, item);
+        formatter.arrayMember(w);
+        serializeImpl(w, item, formatter);
     }
+    formatter.endArray(w);
     w("]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, T val, ref Fmt formatter) if (is(T == V[K], V, K) /* && isSomeString!K */)
 {
     assert(is(T == V[K], V, K));
     enum useKW = !isSomeString!K;
@@ -916,6 +1011,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
     }
 
     // open brace
+    formatter.newObject(w);
     w("{");
     bool first = true;
     foreach(k, v; val)
@@ -924,27 +1020,29 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
             first = false;
         else
             w(", ");
+        formatter.objectMember(w);
         static if(useKW)
         {
-            serializeImpl(&kw, k);
+            // Should formatter be used here???
+            serializeImpl(&kw, k, formatter);
 
             // validate the key ended
             if(!keyEnd)
                 throw new Exception("Key of type " ~ T.stringof ~ " must serialize to a string that ends with a quote");
         }
         else
-            serializeImpl(w, k);
+            serializeImpl(w, k, formatter);
 
         w(" : ");
 
-        serializeImpl(w, v);
+        serializeImpl(w, v, formatter);
     }
+    formatter.endObject(w);
     w("}");
 }
 
 unittest
 {
-    import std.stdio;
     auto serialized = serialize(["a" : 1, "b": 2]);
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
     enum X
@@ -956,7 +1054,7 @@ unittest
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, T val, ref Fmt formatter) if (isSomeString!T)
 {
     w(`"`);
     put(w, val);
@@ -965,6 +1063,14 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isS
 
 void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
 {
+    DefaultFormatter fmt;
+    return serializeAllMembers(w, val, fmt);
+}
+
+void serializeAllMembers(T, Char, Fmt)(scope void delegate(const(Char)[]) w, auto ref T val, ref Fmt formatter)
+{
+    import std.stdio;
+    writeln("here, ", Fmt.stringof);
     // serialize as an object
     bool first = true;
     static foreach(n; SerializableMembers!T)
@@ -978,10 +1084,11 @@ void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref
                     first = false;
                 else
                     w(", ");
+                formatter.objectMember(w);
                 w(`"`);
                 w(k);
                 w(`" : `);
-                serializeImpl(w, v);
+                serializeImpl(w, v, formatter);
             }
         }
         else
@@ -990,44 +1097,46 @@ void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref
                 first = false;
             else
                 w(", ");
+            formatter.objectMember(w);
             w(`"`);
             static if(hasUDA!(__traits(getMember, T, n), alternateName))
                 w(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
             else
                 w(n);
             w(`" : `);
-            serializeImpl(w, __traits(getMember, val, n));
+            serializeImpl(w, __traits(getMember, val, n), formatter);
         }
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, ref T val, ref Fmt formatter) if (is(T == struct))
 {
     static if(isInstanceOf!(Nullable, T))
     {
         if(val.isNull)
             w("null");
         else
-            serializeImpl(w, val.get);
+            serializeImpl(w, val.get, formatter);
     }
     else static if(isInstanceOf!(JSONValue, T))
     {
         with(JSONType) final switch(val.type)
         {
         case Integer:
-            serializeImpl(w, val.integer);
+            serializeImpl(w, val.integer, formatter);
             break;
         case Floating:
-            serializeImpl(w, val.floating);
+            serializeImpl(w, val.floating, formatter);
             break;
         case String:
-            serializeImpl(w, val.str);
+            serializeImpl(w, val.str, formatter);
             break;
         case Array:
-            serializeImpl(w, val.array);
+            serializeImpl(w, val.array, formatter);
             break;
         case Obj:
             // serialize as if it was an object
+            formatter.newObject(w);
             w("{");
             {
                 bool first = true;
@@ -1037,12 +1146,14 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
                         first = false;
                     else
                         w(", ");
+                    formatter.objectMember(w);
                     w(`"`);
                     w(k);
                     w(`" : `);
                     serializeImpl(w, v);
                 }
             }
+            formatter.endObject(w);
             w("}");
             break;
         case Null:
@@ -1055,18 +1166,22 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     }
     else static if(__traits(hasMember, T, "toJSON"))
     {
-        val.toJSON(w);
+        static if(is(typeof(val.toJSON(w, formatter))))
+            val.toJSON(w, formatter);
+        else
+            val.toJSON(w);
     }
     else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
     {
         alias representers = getSymbolsByUDA!(T, serializeAs);
         // serialize as the single item
         static assert(representers.length == 1, "Only one field can be used to represent an object");
-        serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
+        serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])), formatter);
     }
     else static if(isInputRange!T)
     {
         // open brace
+        formatter.newArray(w);
         w("[");
         bool first = true;
         foreach(ref item; val)
@@ -1075,19 +1190,23 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
                 first = false;
             else
                 w(", ");
-            serializeImpl(w, item);
+            formatter.arrayMember(w);
+            serializeImpl(w, item, formatter);
         }
+        formatter.endArray(w);
         w("]");
     }
     else
     {
+        formatter.newObject(w);
         w("{");
-        serializeAllMembers(w, val);
+        serializeAllMembers(w, val, formatter);
+        formatter.endObject(w);
         w("}");
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, T val, ref Fmt formatter) if (is(T == class) || is(T == interface))
 {
     if(val is null)
     {
@@ -1098,12 +1217,17 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
     // just serialize the data as we can.
     static if(__traits(hasMember, T, "toJSON"))
     {
-        val.toJSON(w);
+        static if(is(typeof(val.toJSON(w, formatter))))
+            val.toJSON(w, formatter);
+        else
+            val.toJSON(w);
     }
     else
     {
+        formatter.newObject(w);
         w("{");
-        serializeAllMembers(w, val);
+        serializeAllMembers(w, val, formatter);
+        formatter.endObject(w);
         w("}");
     }
 }
@@ -1122,7 +1246,7 @@ unittest
     assert(serialize(s) == `{"c" : null}`);
 }
 
-void serializeImpl(Char)(scope void delegate(const(Char)[]) w, typeof(null) val)
+void serializeImpl(Char, Fmt)(scope void delegate(const(Char)[]) w, typeof(null) val, ref Fmt formatter)
 {
     w("null");
 }
@@ -1137,13 +1261,13 @@ unittest
     assert(serialize(s) == `{"n" : null}`);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
+void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, ref T val, ref Fmt formatter) if (!is(T == enum) && isNumeric!T)
 {
     import std.format;
     formattedWrite(w, "%s", val);
 }
 
-void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
+void serializeImpl(Char, Fmt)(scope void delegate(const(Char)[]) w, bool val, ref Fmt formatter)
 {
     w(val ? "true" : "false");
 }
@@ -1164,8 +1288,14 @@ void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
 // elements that are in the buffer. If offset is specified, then that is where
 // the data will begin to be written.
 //
-size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val, size_t offset = 0)
+size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(ref Chain chain, auto ref T val, size_t offset = 0)
 if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
+{
+    return serialize!relOnWrite(chain, val, DefaultFormatter.init, offset);
+}
+
+size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T, Fmt)(ref Chain chain, auto ref T val, auto ref Fmt formatter, size_t offset = 0)
+if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)) && !is(Fmt : size_t))
 {
     size_t result = 0;
     alias Char = ElementEncodingType!(WindowType!Chain);
@@ -1180,7 +1310,7 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
     }
 
     // serialize the item, recursively
-    serializeImpl(&w, val);
+    serializeImpl(&w, val, formatter);
 
     return result;
 }
@@ -1188,9 +1318,14 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 // convenience, using normal serialization to write to a string.
 string serialize(T)(auto ref T val)
 {
+    return serialize(val, DefaultFormatter.init);
+}
+
+string serialize(T, Fmt)(auto ref T val, auto ref Fmt formatter)
+{
     import std.exception;
     auto outBuf = bufd!char;
-    auto dataSize = outBuf.serialize!(ReleaseOnWrite.no)(val);
+    auto dataSize = serialize!(ReleaseOnWrite.no)(outBuf, val, formatter);
     auto result = outBuf.window[0 .. dataSize];
     result.assumeSafeAppend;
     return result.assumeUnique;
@@ -1220,6 +1355,8 @@ unittest
     }
 
     assert(serialize(S(1, 2.5, "hi", true)) == `{"x" : 1, "y" : 2.5, "s" : "hi", "b" : true}`);
+    import std.stdio;
+    writeln(serialize(S(1, 2.5, "hi", true), IndentedFormatter(AggregateStyle.indent, AggregateStyle.indent)));
 
     // serialize nested arrays and objects
     auto str3 = serialize([S(1, 3.0, "foo", false), S(2, 8.5, "bar", true)]);
@@ -1348,6 +1485,9 @@ unittest
         S1 obj1;
         string[] arr;
     }
+    import std.stdio;
+    writeln(serialize(S2(S1(1.5, "hi", 1.6, 2.2, 42), ["one", "two"]),
+                IndentedFormatter(AggregateStyle.indent, AggregateStyle.inline)));
     static foreach(config; [
             ParseConfig(false, true, false, false),
             ParseConfig(false, true, true, false),
