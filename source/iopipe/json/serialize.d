@@ -55,6 +55,13 @@ struct alternateName
 IgnoredMembers ignoredMembers(string[] m...) { return IgnoredMembers(m.dup); }
 
 /**
+ * When applied to a struct or class, all members that are not present in the
+ * struct will be ignored.
+ * If an extras member exists, then this has no effect.
+ */
+enum ignoreExtras;
+
+/**
  * Expect the given JSONItem to be a specific token.
  */
 void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
@@ -359,6 +366,8 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
     }
 
+    enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
+
     auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
 
@@ -422,7 +431,12 @@ OBJ_MEMBER_SWITCH:
             }
 
         default:
-            static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+            static if(ignoreExtras)
+            {
+                tokenizer.skipItem();
+                break OBJ_MEMBER_SWITCH;
+            }
+            else static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
             {{
                 // any extras should be put in here
                 import std.conv : to;
@@ -735,6 +749,14 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
     assert(s4.extraData.object["d"].floating == 8.5);
     assert(s4.extraData.object["b"].type == JSONType.Bool);
     assert(s4.extraData.object["b"].boolean == true);
+
+    // test ignoring extras
+    @ignoreExtras static struct S5 {
+        int x;
+    }
+
+    auto s5 = json.deserialize!S5;
+    assert(s5.x == 5);
 }
 
 
