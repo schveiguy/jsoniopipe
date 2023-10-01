@@ -1010,7 +1010,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
                     else
                         w(", ");
                     w(`"`);
-                    w(n);
+                    w(k);
                     w(`" : `);
                     serializeImpl(w, v);
                 }
@@ -1291,6 +1291,13 @@ unittest
     assert(sstr == `{"x" : "b"}`);
     auto s2 = sstr.deserialize!S;
     assert(s2.x == X.b);
+}
+
+unittest
+{
+    // test serializing JSONValue
+    auto j = deserialize!(JSONValue!string)(`{"a": [1, 2, 3], "b": null}`);
+    assert(j.serialize == `{"a" : [1, 2, 3], "b" : null}`);
 }
 
 // JSON5 tests
