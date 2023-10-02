@@ -1592,8 +1592,13 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             case ObjectEnd:
             case ArrayEnd:
                 if(!depth)
-                    // at the end of the current object
-                    return item;
+                {
+                    // at the end of the current object. Skip the end piece, and move on.
+                    auto n = next;
+                    if(n.token == Error)
+                        return n.token;
+                    return peek;
+                }
                 --depth;
                 break;
             case Comma:
@@ -1659,7 +1664,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             // jump into the first member.
             if(peek != JSONToken.ObjectStart)
                 return false;
-            cast(void)next;
+            cast(void)next; // skip the object start
             auto nt = peekSignificant();
             if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
                 return false;
