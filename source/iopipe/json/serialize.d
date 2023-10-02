@@ -1150,7 +1150,7 @@ void serializeImpl(T, Char, Fmt)(scope void delegate(const(Char)[]) w, ref T val
                     w(`"`);
                     w(k);
                     w(`" : `);
-                    serializeImpl(w, v);
+                    serializeImpl(w, v, formatter);
                 }
             }
             formatter.endObject(w);
