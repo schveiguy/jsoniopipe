@@ -1593,13 +1593,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             case ArrayEnd:
                 if(!depth)
                 {
+                    // this is the end of the *parent* object or array. Don't skip it.
+                    return item;
+                }
+                else if(--depth == 0)
+                {
                     // at the end of the current object. Skip the end piece, and move on.
-                    auto n = next;
+                    auto n = nextSignificant;
                     if(n.token == Error)
                         return n.token;
-                    return peek;
+                    return peekSignificant;
                 }
-                --depth;
                 break;
             case Comma:
                 if(depth == 0)
@@ -1610,10 +1614,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
                 return item;
             default:
                 // everything else we ignore
-                auto n = next;
-                if(n.token == Error)
-                    return n.token;
-                continue;
+                break;
             }
             cast(void)next; // skip this item
         }

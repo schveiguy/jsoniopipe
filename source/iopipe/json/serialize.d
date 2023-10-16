@@ -443,7 +443,7 @@ OBJ_MEMBER_SWITCH:
                 JSONValue!SType newItem;
                 tokenizer.deserializeImpl(newItem, relPol);
                 __traits(getMember, item, extrasMember).object[name.to!(immutable(SType))] = newItem;
-                break;
+                break OBJ_MEMBER_SWITCH;
             }}
             else
             {
@@ -851,6 +851,13 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     serializeImpl(w, val[]);
 }
 
+unittest
+{
+    // ensure static array serialization works
+    int[5] arr = [1,2,3,4,5];
+    assert(serialize(arr) == "[1, 2, 3, 4, 5]");
+}
+
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
 {
     // enums are special, serialize based on the name. Unless there's a UDA
@@ -867,7 +874,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     // open brace
     w("[");
@@ -883,7 +890,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     w("]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
 {
     assert(is(T == V[K], V, K));
     enum useKW = !isSomeString!K;
@@ -949,7 +956,7 @@ unittest
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (isSomeString!T)
+void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
 {
     w(`"`);
     put(w, val);
