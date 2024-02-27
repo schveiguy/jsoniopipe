@@ -739,10 +739,10 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
     assert(s.b);
 
     auto c = json.deserialize!D;
-    assert(s.x == 5);
-    assert(s.y == "foo");
-    assert(s.d == 8.5);
-    assert(s.b);
+    assert(c.x == 5);
+    assert(c.y == "foo");
+    assert(c.d == 8.5);
+    assert(c.b);
 
     // test arrays and sub-objects
     static struct S2
