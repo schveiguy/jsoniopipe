@@ -1,4 +1,17 @@
 /**
+Streaming pull-parser for json.
+
+This module contains the low-level API of this package. You use 
+$(LREF JSONTokenizer, next ) and $(LREF JSONTokenizer, peek ) to 
+manually consume the Tokens one by one, checking $(LREF JSONItem, token)
+against $(LREF JSONToken) and the value via $(LREF JSONItem, data). If
+lookahead of one token isn't sufficient, $(LREF JSONTokenizer, startCache)
+and $(LREF JSONTokenizer, rewind) and $(LREF JSONTokenizer, endCache) can
+be used to create Checkpoint to jump back to in the buffered input stream.
+
+For the high level templated api that automatically deserializes a text stream
+into a user-provided type, see $(LREF iopipe, json, serialize).
+
 Copyright: Copyright Steven Schveighoffer 2017
 License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
            http://www.boost.org/LICENSE_1_0.txt)
@@ -1467,6 +1480,8 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
  * returned is simply references to within the iopipe window.
  *
  * Each new item/token can be obtained by calling the `next` method.
+ *
+ * Construct with $(LREF jsonTokenizer) for template inference.
  */
 struct JSONTokenizer(Chain, ParseConfig cfg)
 {
@@ -1524,14 +1539,15 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         size_t cIdx;
     }
 
+    /// Last token has been consumed
     @property bool finished()
     {
         return state == State.End;
     }
 
-    // start caching elements. When this is enabled, rewind will jump back to
-    // the first element and replay from the cache instead of parsing. Make
-    // sure to call endCache when you are done with the replay cache.
+    /// start caching elements. When this is enabled, rewind will jump back to
+    /// the first element and replay from the cache instead of parsing. Make
+    /// sure to call endCache when you are done with the replay cache.
     void startCache()
     {
         caching = true;
@@ -1562,19 +1578,20 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         }
     }
 
-    // this specialized function will skip the current item, taking into
-    // account the nested nature of JSON. The return value is the next JSONItem
-    // after the skipped data.
-    //
-    // If at the beginning of the JSON stream, the entire JSON stream is parsed
-    // until the end of the JSON data in the stream.
-    //
-    // If at a member name, colon, or value expected, the entire member is skipped.
-    //
-    // If at a comma, the comma is skipped.
-    //
-    // If an error is encountered, it is returned immediately
-    //
+    /**
+     * this specialized function will skip the current item, taking into
+     * account the nested nature of JSON. The return value is the next JSONItem
+     * after the skipped data.
+     *
+     * If at the beginning of the JSON stream, the entire JSON stream is parsed
+     * until the end of the JSON data in the stream.
+     *
+     * If at a member name, colon, or value expected, the entire member is skipped.
+     *
+     * If at a comma, the comma is skipped.
+     *
+     * If an error is encountered, it is returned immediately
+     */
     JSONToken skipItem()
     {
         size_t depth = 0;
@@ -1620,8 +1637,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         }
     }
 
-    // skip any spaces and/or comments. Returns the next token after those are
-    // skipped.
+    /// Consume any spaces and/or comments. Returns the next token after those are skipped.
     JSONToken peekSignificant()
     {
         auto nt = peek;
@@ -1645,18 +1661,20 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
 
-    // Parse until it finds a specific member/submember. The assumption is that
-    // the current item is an object start.
-    //
-    // Returns true if the specified submember was found, and the parser is
-    // queued to parse the value of that member.
-    //
-    // Returns false if the object was searched, but the submember could not be
-    // found. In this case, the stream is left in a location that is
-    // potentially partly advanced. Use caching to rewind if you don't wish to
-    // lose the current position.
-    //
-    // Also returns false if this is not an object.
+    /**
+     * Parse until it finds a specific member/submember. The assumption is that
+     * the current item is an object start.
+    
+     * Returns true if the specified submember was found, and the parser is
+     * queued to parse the value of that member.
+    
+     * Returns false if the object was searched, but the submember could not be
+     * found. In this case, the stream is left in a location that is
+     * potentially partly advanced. Use caching to rewind if you don't wish to
+     * lose the current position.
+    
+     * Also returns false if this is not an object.
+     */
     bool parseTo(string[] submember...)
     {
         import std.algorithm : equal;
@@ -1697,7 +1715,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return true;
     }
 
-    // where are we in the buffer
+    /// where are we in the buffer
     @property size_t position()
     {
         if(cIdx < cache.length)
@@ -1835,6 +1853,9 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return item;
     }
 
+    /**
+     * Reset the tokenizer to the state when $(LREF startCache) was called
+     */
     void rewind()
     {
         assert(caching);
