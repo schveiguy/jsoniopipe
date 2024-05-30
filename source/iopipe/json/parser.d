@@ -1,21 +1,21 @@
 /**
-Streaming pull-parser for json.
-
-This module contains the low-level API of this package. You use 
-$(LREF JSONTokenizer, next ) and $(LREF JSONTokenizer, peek ) to 
-manually consume the Tokens one by one, checking $(LREF JSONItem, token)
-against $(LREF JSONToken) and the value via $(LREF JSONItem, data). If
-lookahead of one token isn't sufficient, $(LREF JSONTokenizer, startCache)
-and $(LREF JSONTokenizer, rewind) and $(LREF JSONTokenizer, endCache) can
-be used to create Checkpoint to jump back to in the buffered input stream.
-
-For the high level templated api that automatically deserializes a text stream
-into a user-provided type, see $(LREF iopipe, json, serialize).
-
-Copyright: Copyright Steven Schveighoffer 2017
-License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
-           http://www.boost.org/LICENSE_1_0.txt)
-Authors: Steven Schveighoffer
+ * Streaming pull-parser for json.
+ * 
+ * This module contains the low-level API of this package. You use 
+ * $(LREF JSONTokenizer, next ) and $(LREF JSONTokenizer, peek ) to 
+ * manually consume the Tokens one by one, checking $(LREF JSONItem, token)
+ * against $(LREF JSONToken) and the value via $(LREF JSONItem, data). If
+ * lookahead of one token isn't sufficient, $(LREF JSONTokenizer, startCache)
+ * and $(LREF JSONTokenizer, rewind) and $(LREF JSONTokenizer, endCache) can
+ * be used to create Checkpoint to jump back to in the buffered input stream.
+ * 
+ * For the high level templated api that automatically deserializes a text stream
+ * into a user-provided type, see $(LREF iopipe, json, serialize).
+ * 
+ * Copyright: Copyright Steven Schveighoffer 2017
+ * License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
+ *            http://www.boost.org/LICENSE_1_0.txt)
+ * Authors: Steven Schveighoffer
 */
 module iopipe.json.parser;
 import iopipe.traits;
@@ -51,8 +51,10 @@ enum JSONToken : char
 
 struct ParseConfig
 {
-    /// For mutable pipes, replace unicode/string escapes with the correct
-    /// character before returning the json item.
+    /**
+     * For mutable pipes, replace unicode/string escapes with the correct
+     * character before returning the json item.
+     */
     bool replaceEscapes;
 
     /// Allow parsing of JSON5, not just JSON. See https://json5.org
@@ -61,8 +63,10 @@ struct ParseConfig
     /// Parsing should include spaces in the parsed output.
     bool includeSpaces;
 
-    /// Parsing should include comments in the parsed output. Comments include
-    /// the comment delimeters.
+    /**
+     * Parsing should include comments in the parsed output. Comments include
+     * the comment delimeters.
+     */
     bool includeComments;
 }
 
@@ -391,12 +395,14 @@ struct JSONItem
     }
 }
 
-// if TP is not empty, then it contains the target position, and we are
-// replacing escapes
-//
-// pos should be set to point at the first hex character
-//
-// returns the dchar parsed.
+/**
+ * if TP is not empty, then it contains the target position, and we are
+ * replacing escapes
+ *
+ * pos should be set to point at the first hex character
+ *
+ * returns the dchar parsed.
+ */
 private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowChanged, ref size_t pos, ref TP targetPos) if (TP.length == 0 || is(TP == AliasSeq!(size_t)))
 {
     enum replaceEscapes = TP.length > 0;
@@ -1545,9 +1551,11 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return state == State.End;
     }
 
-    /// start caching elements. When this is enabled, rewind will jump back to
-    /// the first element and replay from the cache instead of parsing. Make
-    /// sure to call endCache when you are done with the replay cache.
+    /** 
+     * Start caching elements. When this is enabled, rewind will jump back to
+     * the first element and replay from the cache instead of parsing. Make
+     * sure to call endCache when you are done with the replay cache.
+     */
     void startCache()
     {
         caching = true;
