@@ -1,3 +1,22 @@
+/**
+ * Serialize and deserialize arbitrary objects to/ from json
+ * 
+ * Both $(LREF serialize) and $(LREF deserialize) support 3 levels of detail.
+ * If the template argument is just a type, they try to serialize it as
+ * faithfully as possible.
+ * For structs and classes, this means treating the fieldnames as keys in
+ * a JSON object.
+ * The type JSONValue can be used if dynamic objects are needed.
+ * 
+ * For more controls, the various UDAs defined here can be used on compound
+ * types or their fields to customize the behaviour of this module in a
+ * limited way.
+ * 
+ * If that is not enough, structs/ classes can define toJSON or a static
+ * fromJSON method and take full control over how they are serialized.
+ * For toJSON, $(LREF serializeAllMembers) might be useful. fromJSON will
+ * have to use $(LREF iopipe,json,parser).
+ */
 module iopipe.json.serialize;
 import iopipe.json.parser;
 import iopipe.json.dom;
