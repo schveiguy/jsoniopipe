@@ -15,25 +15,63 @@ struct IgnoredMembers { string[] ignoredMembers; }
 /**
  * This UDA will cause the specified member to be substituted in for
  * serializing a struct or class type.
+ *
+ * See_Also:
+ *     $(LREF ignoreExtras)
  */
 enum serializeAs;
 
+///
+unittest {
+    static struct T {
+        @serializeAs string s;
+        int x;
+    }
+
+    T t = deserialize!(T)(`"hi"`);
+    assert(t.s == "hi");
+    assert(t.x == int.init);
+
+    assert(t.serialize == `"hi"`);
+
+    import std.exception;
+    // This would only work with @ignoreExtras
+    assert( 
+		    deserialize!(T)(`{"s": "invalid", "x": 1}`).collectExceptionMsg 
+		    == "Parsing string: expected String, got ObjectStart"
+	    );
+}
+
 /**
- * Ignore the member when serializing a struct or class.
+ * UDA: Ignore the member when serializing a struct or class.
  */
 enum ignore;
 
 /**
- * If this member is not present when deserializing a type, do not consider it
- * an error.
+ * UDA: If this member is not present when deserializing a type, do not consider
+ * it an error.
  */
 enum optional;
 
 /**
- * if on an enum, this serializes the enum as the base type instead of the enum
- * name (default).
+ * UDA: if on an enum, this serializes the enum as the base type instead of the
+ * enum name (default).
  */
 enum enumBaseType;
+
+/**
+ * enum Y gets serialized as an int here
+ */
+unittest {
+    enum X { a, b, c }
+    @enumBaseType enum Y: int {a, b, c,}
+    static struct S { X x; Y y; }
+    auto s = S(X.a, Y.a);
+    auto sstr = s.serialize;
+    assert(sstr == `{"x" : "a", "y" : 0}`);
+    auto s2 = sstr.deserialize!S;
+    assert(s2.x == X.a && s2.y == Y.a);
+}
 
 /**
  * This UDA, when applied to a JSONValue type member, will consume all items
@@ -42,9 +80,44 @@ enum enumBaseType;
  */
 enum extras;
 
+///
+unittest {
+    static struct T {
+        string name;
+	@extras JSONValue!string stuff;
+    }
+
+    T t = deserialize!(T)(`{"name": "valid", "a": "another string", "b": 2, "c": 8.5}`);
+    assert(t.name == "valid");
+    assert(t.stuff.object["a"].type == JSONType.String);
+    assert(t.stuff.object["a"].str == "another string");
+    assert(t.stuff.object["b"].type == JSONType.Integer);
+    assert(t.stuff.object["b"].integer == 2);
+    assert(t.stuff.object["c"].type == JSONType.Floating);
+    assert(t.stuff.object["c"].floating == 8.5);
+}
+
+/**
+ * UDA: Use a different name in json than in the D struct
+ */
 struct alternateName
 {
     string name;
+}
+
+/**
+ * The alternate name is not optional
+ */
+unittest {
+	import std.exception;
+    static struct T {
+        @alternateName("alternate") string name;
+    }
+
+    T t = deserialize!(T)(`{"alternate": "valid"}`);
+    assert(t.name == "valid");
+    assert(t.serialize == `{"alternate" : "valid"}`);
+    deserialize!(T)(`{"name": "invalid"}`).assertThrown;
 }
 
 /**
@@ -60,6 +133,29 @@ IgnoredMembers ignoredMembers(string[] m...) { return IgnoredMembers(m.dup); }
  * If an extras member exists, then this has no effect.
  */
 enum ignoreExtras;
+
+///
+unittest {
+    import std.exception;
+
+    static struct S {
+        string s;
+        int x;
+    }
+
+    @ignoreExtras
+    static struct T {
+        string s;
+        int x;
+    }
+
+    deserialize!(S)(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown;
+    T t = deserialize!(T)(`{"s" : "hi", "x": 1, "extra": "ignored"}`);
+    assert(t.s == "hi");
+    assert(t.x == 1);
+
+    assert(t.serialize == `{"s" : "hi", "x" : 1}`);
+}
 
 /**
  * Expect the given JSONItem to be a specific token.
@@ -1307,18 +1403,6 @@ unittest
     assert(estr == `{"d" : 1.5, "s" : "foo", "x" : 3}`, estr);
     d = e;
     assert(d.serialize == estr);
-}
-
-unittest
-{
-    // test serializing enums
-    enum X { a, b, c }
-    static struct S { X x; }
-    auto s = S(X.b);
-    auto sstr = s.serialize;
-    assert(sstr == `{"x" : "b"}`);
-    auto s2 = sstr.deserialize!S;
-    assert(s2.x == X.b);
 }
 
 unittest
