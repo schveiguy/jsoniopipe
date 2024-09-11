@@ -123,7 +123,7 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
             return result;
         }
     default:
-        throw new Exception("Error in JSON data");
+        throw new JSONIopipeException("Error in JSON data");
     }
 }
 
@@ -175,6 +175,10 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
     return arr;
 }
 
+/** Parse into JSONValue tree until end of root object.
+ * Throws:
+ * 	JSONIopipeException on parser error.
+ */
 auto parseJSON(Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
     return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer, relPol);

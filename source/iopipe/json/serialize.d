@@ -168,7 +168,7 @@ unittest {
         int x;
     }
 
-    deserialize!(S)(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown;
+    deserialize!(S)(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown!JSONIopipeException;
     T t = deserialize!(T)(`{"s" : "hi", "x": 1, "extra": "ignored"}`);
     assert(t.s == "hi");
     assert(t.x == 1);
@@ -178,13 +178,15 @@ unittest {
 
 /**
  * Expect the given JSONItem to be a specific token.
+ * Throws:
+ *	JSONIopipeException on violation.
  */
 void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
         import std.format;
-        throw new Exception(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
+        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
     }
 }
 
@@ -335,7 +337,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
         if(jsonItem.hint != JSONParseHint.Int &&
                 !(tokenizer.config.JSON5 && jsonItem.hint == JSONParseHint.Hex))
         {
-            throw new Exception(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data(tokenizer.chain)));
+            throw new JSONIopipeException(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data(tokenizer.chain)));
         }
     }
     else
@@ -388,7 +390,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
         item = window.parse!T;
     if(!window.empty)
     {
-        throw new Exception(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data(tokenizer.chain), window));
+        throw new JSONIopipeException(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data(tokenizer.chain), window));
     }
 }
 
@@ -408,7 +410,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     else
     {
         import std.format;
-        throw new Exception(format("Parsing bool: expected %s or %s , but got %s", JSONToken.True, JSONToken.False, jsonItem.token));
+        throw new JSONIopipeException(format("Parsing bool: expected %s or %s , but got %s", JSONToken.True, JSONToken.False, jsonItem.token));
     }
 }
 
@@ -563,7 +565,7 @@ OBJ_MEMBER_SWITCH:
             else
             {
                 import std.format : format;
-                throw new Exception(format("No member named '%s' in type `%s`", name, T.stringof));
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name, T.stringof));
             }
         }
         // shut up compiler
@@ -584,7 +586,7 @@ OBJ_MEMBER_SWITCH:
             static immutable marr = [members];
             import std.format;
             import std.range : enumerate;
-            throw new Exception(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
         }
     }
 }
@@ -673,7 +675,10 @@ unittest
 
 
 
-// Given a JSON tokenizer, deserialize the given type from the JSON data.
+/** Deserialize the given type from the JSON data.
+ * Throws:
+ * 	JSONIopipeException on parser error.
+ */
 T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
@@ -1022,7 +1027,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
             {
                 // validate that the key starts with "
                 if(str[0] != '"')
-                    throw new Exception("Key in AA of type " ~ T.stringof ~ " must serialize to string that starts with a quote");
+                    throw new JSONIopipeException("Key in AA of type " ~ T.stringof ~ " must serialize to string that starts with a quote");
                 keyStart = true;
             }
             keyEnd = str[$-1] == '"';
@@ -1045,7 +1050,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
 
             // validate the key ended
             if(!keyEnd)
-                throw new Exception("Key of type " ~ T.stringof ~ " must serialize to a string that ends with a quote");
+                throw new JSONIopipeException("Key of type " ~ T.stringof ~ " must serialize to a string that ends with a quote");
         }
         else
             serializeImpl(w, k);
