@@ -27,6 +27,7 @@ import std.range.primitives;
 
 import std.traits;
 import std.typecons : Nullable;
+import std.conv;
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -181,7 +182,7 @@ unittest {
  * Throws:
  *	JSONIopipeException on violation.
  */
-void jsonExpect(ref JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
+void jsonExpect(JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
@@ -219,7 +220,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 {
     // enums are special, we can serialize them based on the enum name, or the
     // base type.
-    import std.conv : to;
     static if(hasUDA!(T, enumBaseType))
     {
         deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item), pol);
@@ -326,7 +326,6 @@ unittest
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
 {
-    import std.conv : parse;
     import std.format : format;
     auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.Number, "Parsing " ~ T.stringof);
@@ -396,7 +395,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == bool))
 {
-    import std.conv : parse;
     import std.format : format;
     auto jsonItem = tokenizer.nextSignificant;
     if(jsonItem.token == JSONToken.True)
@@ -417,7 +415,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isSomeString!T)
 {
     // Use phobos `to`, we want to duplicate the string if necessary.
-    import std.conv : to;
     import std.format : format;
 
     auto jsonItem = tokenizer.nextSignificant;
@@ -556,7 +553,6 @@ OBJ_MEMBER_SWITCH:
             else static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
             {{
                 // any extras should be put in here
-                import std.conv : to;
                 JSONValue!SType newItem;
                 tokenizer.deserializeImpl(newItem, relPol);
                 __traits(getMember, item, extrasMember).object[name.to!(immutable(SType))] = newItem;
@@ -988,7 +984,6 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     }
     else
     {
-        import std.conv;
         auto enumName = val.to!string;
         serializeImpl(w, enumName);
     }
@@ -1483,7 +1478,8 @@ unittest
     static struct S
     {
         int x;
-        static S fromJSON(JT)(JT tokenizer, ReleasePolicy relPol)
+        int xDouble; /// redundant value derived from x, not in json representation
+        static S fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
         {
             assert(tokenizer.nextSignificant.token == JSONToken.ObjectStart);
             auto xname = tokenizer.nextSignificant;
@@ -1493,10 +1489,38 @@ unittest
             assert(val.token == JSONToken.Number);
             assert(val.hint == JSONParseHint.Int);
             assert(tokenizer.nextSignificant.token == JSONToken.ObjectEnd);
-            import std.conv : to;
-            return S(val.data(tokenizer.chain).to!int);
+	    int x = val.data(tokenizer.chain).to!int;
+            return S(x, x*2);
         }
     }
 
-    assert(`{"x": 5}`.deserialize!S.x == 5);
+    assert(`{"x": 5}`.deserialize!S == S(5,10));
+}
+
+/** This example demonstrates the invariants of fromJSON
+ * Assuming valid JSON, the first token will be ObjectStart.
+ * The ObjectEnd token in the end must be consumed by this function, but no further.
+ * That way, the Struct/Class will just work as a JSONArray or a member of another object.
+ */
+unittest
+{
+    import std.exception;
+    static struct S
+    {
+        int x;
+        static S fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
+        {
+            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
+            auto xname = tokenizer.nextSignificant;
+            enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
+            jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
+            auto val = tokenizer.nextSignificant;
+	    // ObjectEnd must be consumed by fromJSON
+            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
+            return S(val.data(tokenizer.chain).to!int);
+        }
+    }
+    auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
+
+    assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
 }
