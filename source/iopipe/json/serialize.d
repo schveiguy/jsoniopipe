@@ -448,6 +448,11 @@ private template AllIgnoredMembers(T)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
+    import std.meta;
+    enum isRef(string s) = s == "ref";
+    static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+        "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+    //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
     item = T.fromJSON(tokenizer, relPol);
 }
 
