@@ -125,6 +125,8 @@ bool isSymbolStart(dchar firstChar)
  * before returning. This means for JSON5 mode, this function isn't as trivial.
  *
  * Params:
+ *    config = parser configuration. if JSON5 mode, then includeComments and
+ *    includeSpaces are taken into account
  *    c = The iopipe in which to search for tokens. extend may be used on the
  *    iopipe to find the next token.
  *    pos = Current position in the window. Taken via ref so it can be updated
@@ -514,7 +516,12 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
  * `\uXXXX` sequence are validated.
  * 
  * Params:
- *     replaceEscapes = If true, then any encountered escapes will be replaced with the actual utf characters they represent, properly encoded for the given element type.
+ *     replaceEscapes = If true, then any encountered escapes will be replaced
+ *     with the actual utf characters they represent, properly encoded
+ *     for the given element type.
+ *     JSON5 = If true, processes JSON5 style strings
+ *     config = parser configuration. `config.JSON5` and `config.replaceEscapes`
+ *     are used.
  *     c = The iopipe to parse the string from. If the end of the string is not
  *     present in the current window, it will be extended until the end is
  *     found.
@@ -739,6 +746,7 @@ escapeSequenceDone:
     assert(0);
 }
 
+/// ditto
 int parseString(ParseConfig config, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
     return parseString!(config.replaceEscapes, config.JSON5)(c, pos, hint);
@@ -780,6 +788,8 @@ unittest
  * how many elements in the stream are used for this number.
  *
  * Params:
+ *     JSON5 = if true, parse JSON5 numbers
+ *     config = configuration overload, only `config.JSON5` is used.
  *     c = The iopipe the number is being parsed from.
  *     pos = Upon calling, the position in the iopipe window where this number
  *     should start. Upon exit, if successfully parsed, this is the position
@@ -1016,6 +1026,7 @@ int parseNumber(bool JSON5, Chain)(ref Chain c, ref size_t pos, ref JSONParseHin
     assert(0);
 }
 
+/// ditto
 int parseNumber(ParseConfig config, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
     return parseNumber!(config.JSON5)(c, pos, hint);
@@ -1168,8 +1179,7 @@ private bool parseComment(Chain)(ref Chain c, ref size_t pos)
  * stream. It only confirms that the next item is a valid JSON item.
  *
  * Params:
- *     replaceEscapes = Boolean passed to string parser to specify how escapes
- *     should be handled. See parseString for details.
+ *     config = Parser config.
  *     c = iopipe from which to parse item. If needed, it may be extended.
  *     pos = Current position in the iopipe's window from which the next item
  *     should start. Leading whitespace is allowed.
@@ -1658,7 +1668,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return nt;
     }
 
-    // skip all the spaces and/or comments, and then return the next token
+    /// skip all the spaces and/or comments, and then return the next token
     JSONItem nextSignificant()
     {
         static if(config.includeSpaces || (config.JSON5 && config.includeComments))
