@@ -1,8 +1,21 @@
 /**
-Copyright: Copyright Steven Schveighoffer 2017
-License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
-           http://www.boost.org/LICENSE_1_0.txt)
-Authors: Steven Schveighoffer
+ * Streaming pull-parser for json.
+ * 
+ * This module contains the low-level API of this package. You use 
+ * $(LREF JSONTokenizer, next ) and $(LREF JSONTokenizer, peek ) to 
+ * manually consume the Tokens one by one, checking $(LREF JSONItem, token)
+ * against $(LREF JSONToken) and the value via $(LREF JSONItem, data). If
+ * lookahead of one token isn't sufficient, $(LREF JSONTokenizer, startCache)
+ * and $(LREF JSONTokenizer, rewind) and $(LREF JSONTokenizer, endCache) can
+ * be used to create Checkpoint to jump back to in the buffered input stream.
+ * 
+ * For the high level templated api that automatically deserializes a text stream
+ * into a user-provided type, see $(LREF iopipe, json, serialize).
+ * 
+ * Copyright: Copyright Steven Schveighoffer 2017
+ * License:   Boost License 1.0. (See accompanying file LICENSE_1_0.txt or copy at
+ *            http://www.boost.org/LICENSE_1_0.txt)
+ * Authors: Steven Schveighoffer
 */
 module iopipe.json.parser;
 import iopipe.traits;
@@ -38,8 +51,10 @@ enum JSONToken : char
 
 struct ParseConfig
 {
-    /// For mutable pipes, replace unicode/string escapes with the correct
-    /// character before returning the json item.
+    /**
+     * For mutable pipes, replace unicode/string escapes with the correct
+     * character before returning the json item.
+     */
     bool replaceEscapes;
 
     /// Allow parsing of JSON5, not just JSON. See https://json5.org
@@ -48,8 +63,10 @@ struct ParseConfig
     /// Parsing should include spaces in the parsed output.
     bool includeSpaces;
 
-    /// Parsing should include comments in the parsed output. Comments include
-    /// the comment delimeters.
+    /**
+     * Parsing should include comments in the parsed output. Comments include
+     * the comment delimeters.
+     */
     bool includeComments;
 }
 
@@ -108,6 +125,8 @@ bool isSymbolStart(dchar firstChar)
  * before returning. This means for JSON5 mode, this function isn't as trivial.
  *
  * Params:
+ *    config = parser configuration. if JSON5 mode, then includeComments and
+ *    includeSpaces are taken into account
  *    c = The iopipe in which to search for tokens. extend may be used on the
  *    iopipe to find the next token.
  *    pos = Current position in the window. Taken via ref so it can be updated
@@ -378,12 +397,14 @@ struct JSONItem
     }
 }
 
-// if TP is not empty, then it contains the target position, and we are
-// replacing escapes
-//
-// pos should be set to point at the first hex character
-//
-// returns the dchar parsed.
+/**
+ * if TP is not empty, then it contains the target position, and we are
+ * replacing escapes
+ *
+ * pos should be set to point at the first hex character
+ *
+ * returns the dchar parsed.
+ */
 private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowChanged, ref size_t pos, ref TP targetPos) if (TP.length == 0 || is(TP == AliasSeq!(size_t)))
 {
     enum replaceEscapes = TP.length > 0;
@@ -495,7 +516,12 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
  * `\uXXXX` sequence are validated.
  * 
  * Params:
- *     replaceEscapes = If true, then any encountered escapes will be replaced with the actual utf characters they represent, properly encoded for the given element type.
+ *     replaceEscapes = If true, then any encountered escapes will be replaced
+ *     with the actual utf characters they represent, properly encoded
+ *     for the given element type.
+ *     JSON5 = If true, processes JSON5 style strings
+ *     config = parser configuration. `config.JSON5` and `config.replaceEscapes`
+ *     are used.
  *     c = The iopipe to parse the string from. If the end of the string is not
  *     present in the current window, it will be extended until the end is
  *     found.
@@ -720,6 +746,7 @@ escapeSequenceDone:
     assert(0);
 }
 
+/// ditto
 int parseString(ParseConfig config, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
     return parseString!(config.replaceEscapes, config.JSON5)(c, pos, hint);
@@ -761,6 +788,8 @@ unittest
  * how many elements in the stream are used for this number.
  *
  * Params:
+ *     JSON5 = if true, parse JSON5 numbers
+ *     config = configuration overload, only `config.JSON5` is used.
  *     c = The iopipe the number is being parsed from.
  *     pos = Upon calling, the position in the iopipe window where this number
  *     should start. Upon exit, if successfully parsed, this is the position
@@ -997,6 +1026,7 @@ int parseNumber(bool JSON5, Chain)(ref Chain c, ref size_t pos, ref JSONParseHin
     assert(0);
 }
 
+/// ditto
 int parseNumber(ParseConfig config, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
     return parseNumber!(config.JSON5)(c, pos, hint);
@@ -1149,8 +1179,7 @@ private bool parseComment(Chain)(ref Chain c, ref size_t pos)
  * stream. It only confirms that the next item is a valid JSON item.
  *
  * Params:
- *     replaceEscapes = Boolean passed to string parser to specify how escapes
- *     should be handled. See parseString for details.
+ *     config = Parser config.
  *     c = iopipe from which to parse item. If needed, it may be extended.
  *     pos = Current position in the iopipe's window from which the next item
  *     should start. Leading whitespace is allowed.
@@ -1467,6 +1496,8 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
  * returned is simply references to within the iopipe window.
  *
  * Each new item/token can be obtained by calling the `next` method.
+ *
+ * Construct with $(LREF jsonTokenizer) for template inference.
  */
 struct JSONTokenizer(Chain, ParseConfig cfg)
 {
@@ -1524,14 +1555,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         size_t cIdx;
     }
 
+    /// Last token has been consumed
     @property bool finished()
     {
         return state == State.End;
     }
 
-    // start caching elements. When this is enabled, rewind will jump back to
-    // the first element and replay from the cache instead of parsing. Make
-    // sure to call endCache when you are done with the replay cache.
+    /** 
+     * Start caching elements. When this is enabled, rewind will jump back to
+     * the first element and replay from the cache instead of parsing. Make
+     * sure to call endCache when you are done with the replay cache.
+     */
     void startCache()
     {
         caching = true;
@@ -1562,19 +1596,20 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         }
     }
 
-    // this specialized function will skip the current item, taking into
-    // account the nested nature of JSON. The return value is the next JSONItem
-    // after the skipped data.
-    //
-    // If at the beginning of the JSON stream, the entire JSON stream is parsed
-    // until the end of the JSON data in the stream.
-    //
-    // If at a member name, colon, or value expected, the entire member is skipped.
-    //
-    // If at a comma, the comma is skipped.
-    //
-    // If an error is encountered, it is returned immediately
-    //
+    /**
+     * this specialized function will skip the current item, taking into
+     * account the nested nature of JSON. The return value is the next JSONItem
+     * after the skipped data.
+     *
+     * If at the beginning of the JSON stream, the entire JSON stream is parsed
+     * until the end of the JSON data in the stream.
+     *
+     * If at a member name, colon, or value expected, the entire member is skipped.
+     *
+     * If at a comma, the comma is skipped.
+     *
+     * If an error is encountered, it is returned immediately
+     */
     JSONToken skipItem()
     {
         size_t depth = 0;
@@ -1620,8 +1655,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         }
     }
 
-    // skip any spaces and/or comments. Returns the next token after those are
-    // skipped.
+    /// Consume any spaces and/or comments. Returns the next token after those are skipped.
     JSONToken peekSignificant()
     {
         auto nt = peek;
@@ -1634,7 +1668,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return nt;
     }
 
-    // skip all the spaces and/or comments, and then return the next token
+    /// skip all the spaces and/or comments, and then return the next token
     JSONItem nextSignificant()
     {
         static if(config.includeSpaces || (config.JSON5 && config.includeComments))
@@ -1645,18 +1679,20 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
 
-    // Parse until it finds a specific member/submember. The assumption is that
-    // the current item is an object start.
-    //
-    // Returns true if the specified submember was found, and the parser is
-    // queued to parse the value of that member.
-    //
-    // Returns false if the object was searched, but the submember could not be
-    // found. In this case, the stream is left in a location that is
-    // potentially partly advanced. Use caching to rewind if you don't wish to
-    // lose the current position.
-    //
-    // Also returns false if this is not an object.
+    /**
+     * Parse until it finds a specific member/submember. The assumption is that
+     * the current item is an object start.
+    
+     * Returns true if the specified submember was found, and the parser is
+     * queued to parse the value of that member.
+    
+     * Returns false if the object was searched, but the submember could not be
+     * found. In this case, the stream is left in a location that is
+     * potentially partly advanced. Use caching to rewind if you don't wish to
+     * lose the current position.
+    
+     * Also returns false if this is not an object.
+     */
     bool parseTo(string[] submember...)
     {
         import std.algorithm : equal;
@@ -1697,7 +1733,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return true;
     }
 
-    // where are we in the buffer
+    /// where are we in the buffer
     @property size_t position()
     {
         if(cIdx < cache.length)
@@ -1835,6 +1871,9 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return item;
     }
 
+    /**
+     * Reset the tokenizer to the state when $(LREF startCache) was called
+     */
     void rewind()
     {
         assert(caching);
