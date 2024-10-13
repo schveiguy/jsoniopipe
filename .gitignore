@@ -1,6 +1,43 @@
+# Object Files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker Output
+*.ilk
+*.map
+*.exp
+
+# Debug Files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Dynamic Libraries
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Static Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Executables
+*.exe
+*.out
+
+# ===
+# DUB
+# ===
 .dub
 docs.json
 __dummy.html
-*.o
-*.obj
-__test__*__
+docs/
+
+# Code coverage
+*.lst
