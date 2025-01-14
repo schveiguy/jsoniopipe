@@ -575,13 +575,14 @@ OBJ_MEMBER_SWITCH:
                 // any extras should be put in here
                 JSONValue!SType newItem;
                 tokenizer.deserializeImpl(newItem, relPol);
-                __traits(getMember, item, extrasMember).object[name.to!(immutable(SType))] = newItem;
+		auto copyIfNeeded = (string s) => (s.ptr != namebuffer.ptr) ? s : s.idup;
+                __traits(getMember, item, extrasMember).object[copyIfNeeded(name).to!(immutable(SType))] = newItem;
                 break OBJ_MEMBER_SWITCH;
             }}
             else
             {
                 import std.format : format;
-                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name, T.stringof));
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name.idup, T.stringof));
             }
         }
         // shut up compiler
