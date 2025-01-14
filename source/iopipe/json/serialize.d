@@ -512,7 +512,22 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        auto name = jsonItem.data(tokenizer.chain);
+        char[32] namebuffer = void;
+        string name = {
+                // Need to buffer the name, as following calls of "nextSignificant" may call extend, which invalidates the window
+                const window = jsonItem.data(tokenizer.chain);
+                if(window.length <= namebuffer.length)
+                {
+                        char[] retbuf = namebuffer[0..window.length];
+                        retbuf[] = window[];
+                        return cast(immutable char[]) retbuf;
+                }
+                else
+                {
+                        return window.idup;
+                }
+        }();
+
         // TODO: handle names with unicode escapes
 
         jsonItem = tokenizer.nextSignificant();
