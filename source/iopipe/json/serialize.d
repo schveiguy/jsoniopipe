@@ -512,15 +512,16 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        char[32] namebuffer = void;
-        string name = {
+	alias CharT = Unqual!(typeof(jsonItem.data(tokenizer.chain)[0]));
+        CharT[32] namebuffer = void;
+        auto name = {
                 // Need to buffer the name, as following calls of "nextSignificant" may call extend, which invalidates the window
                 const window = jsonItem.data(tokenizer.chain);
                 if(window.length <= namebuffer.length)
                 {
-                        char[] retbuf = namebuffer[0..window.length];
+                        CharT[] retbuf = namebuffer[0..window.length];
                         retbuf[] = window[];
-                        return cast(immutable char[]) retbuf;
+                        return cast(immutable CharT[]) retbuf;
                 }
                 else
                 {
