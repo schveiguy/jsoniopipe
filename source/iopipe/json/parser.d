@@ -377,6 +377,10 @@ struct JSONItem
     /**
      * Given an iopipe from which this token came, returns the exact window
      * data for the item.
+     *
+     * WARNING:	For any given JSONItem, calling this function is only valid until the next call to peek/next.
+     * 		You have to copy the string if you can't use it immediately.
+     * 		The returned string also gets invalidated on peek/next.
      */
     auto data(Chain)(ref Chain c)
     {
