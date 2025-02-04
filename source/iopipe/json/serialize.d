@@ -512,29 +512,16 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-	alias CharT = Unqual!(typeof(jsonItem.data(tokenizer.chain)[0]));
-        CharT[32] namebuffer = void;
-        auto name = {
-                // Need to buffer the name, as following calls of "nextSignificant" may call extend, which invalidates the window
-                const window = jsonItem.data(tokenizer.chain);
-                if(window.length <= namebuffer.length)
-                {
-                        CharT[] retbuf = namebuffer[0..window.length];
-                        retbuf[] = window[];
-                        return cast(immutable CharT[]) retbuf;
-                }
-                else
-                {
-                        return window.idup;
-                }
-        }();
 
+        // Have to call nameItem.data() on each access, as the returned string would get invalidated by calls to tokenizer.next()
+        auto nameItem = jsonItem;
+        scope name = () => nameItem.data(tokenizer.chain);
         // TODO: handle names with unicode escapes
 
         jsonItem = tokenizer.nextSignificant();
         jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 OBJ_MEMBER_SWITCH:
-        switch(name)
+        switch(name())
         {
             static foreach(i, m; members)
                 static if(!hasUDA!(__traits(getMember, item, m), extras))
@@ -575,15 +562,16 @@ OBJ_MEMBER_SWITCH:
             {{
                 // any extras should be put in here
                 JSONValue!SType newItem;
+                // Need to save name() before deserializeImpl potentially calls release and invalidates the window
+                auto key = name().to!(immutable(SType));
                 tokenizer.deserializeImpl(newItem, relPol);
-		auto copyIfNeeded = (string s) => (s.ptr != namebuffer.ptr) ? s : s.idup;
-                __traits(getMember, item, extrasMember).object[copyIfNeeded(name).to!(immutable(SType))] = newItem;
+                __traits(getMember, item, extrasMember).object[key] = newItem;
                 break OBJ_MEMBER_SWITCH;
             }}
             else
             {
                 import std.format : format;
-                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name.idup, T.stringof));
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name, T.stringof));
             }
         }
         // shut up compiler
