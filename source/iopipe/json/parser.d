@@ -377,6 +377,9 @@ struct JSONItem
     /**
      * Given an iopipe from which this token came, returns the exact window
      * data for the item.
+     *
+     * WARNING:	A JSONItem can only safely call this function before the item is released with "releaseParsed".
+     * 		Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
      */
     auto data(Chain)(ref Chain c)
     {

@@ -512,13 +512,16 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         }
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        auto name = jsonItem.data(tokenizer.chain);
+
+        // Have to call nameItem.data() on each access, as the returned string would get invalidated by calls to tokenizer.next()
+        auto nameItem = jsonItem;
+        scope name = () => nameItem.data(tokenizer.chain);
         // TODO: handle names with unicode escapes
 
         jsonItem = tokenizer.nextSignificant();
         jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 OBJ_MEMBER_SWITCH:
-        switch(name)
+        switch(name())
         {
             static foreach(i, m; members)
                 static if(!hasUDA!(__traits(getMember, item, m), extras))
@@ -559,8 +562,10 @@ OBJ_MEMBER_SWITCH:
             {{
                 // any extras should be put in here
                 JSONValue!SType newItem;
+                // Need to save name() before deserializeImpl potentially calls release and invalidates the window
+                auto key = name().to!(immutable(SType));
                 tokenizer.deserializeImpl(newItem, relPol);
-                __traits(getMember, item, extrasMember).object[name.to!(immutable(SType))] = newItem;
+                __traits(getMember, item, extrasMember).object[key] = newItem;
                 break OBJ_MEMBER_SWITCH;
             }}
             else
