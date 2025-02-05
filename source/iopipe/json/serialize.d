@@ -197,6 +197,99 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
+/**
+ * Wrapper struct to pass output ranges to deserialize. This is needed because there is no general way to determine 
+ * the element type of an output range, it's often templated. Even the phobos `isOutputRange` requires an element type.
+ */
+struct OutputRange(R_, ElemT_)
+{
+    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    alias R = R_;
+    alias ElemT = ElemT_;
+    R r;
+}
+
+auto makeOutputRange(ElemT,R)(R range)
+{
+    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    return OutputRange!(R, ElemT)(range);
+}
+
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(OutputRange, T))
+{
+    auto jsonItem = tokenizer.nextSignificant;
+    //auto jsonItem = tokenizer.nextSignificant
+        //.jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+
+    // check for an empty array (special case)
+    if(tokenizer.peek == JSONToken.ArrayEnd)
+    {
+        // parse it off
+        jsonItem = tokenizer.nextSignificant;
+        // nothing left to do
+        return;
+    }
+    // parse items and commas until we get an array end.
+    while(true)
+    {
+        T.ElemT elem;
+        deserializeImpl(tokenizer, elem, relPol);
+        put(item.r, elem);
+        if(relPol == ReleasePolicy.afterMembers)
+            tokenizer.releaseParsed();
+        jsonItem = tokenizer.nextSignificant;
+        if(jsonItem.token == JSONToken.ArrayEnd)
+            break;
+        jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
+        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
+        {
+            // was a trailing comma. parse the array end and break
+            tokenizer.next;
+            break;
+        }
+    }
+}
+
+// Output range
+// One usecase: Parse an array with known maximum size on the stack.
+unittest
+{
+    int[50] arr = void;
+    int n = 0;
+    auto insert = (int i){arr[n++] = i;};
+
+    static assert(isOutputRange!(typeof(insert), int), "test");
+    auto r = makeOutputRange!int(insert);
+
+    auto json = `[0,1,2,3,4,5,6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    tok.deserialize(r);
+
+    assert(n==10);
+    assert(arr[0..n] == [0,1,2,3,4,5,6,7,8,9]);
+
+    // Structs work too
+    struct S {
+        void put(int i){
+            arr[n++] = i;
+        }
+    }
+    tok = json.jsonTokenizer;
+    auto r2= makeOutputRange!int(S());
+    tok.deserialize(r2);
+    assert(n==20);
+    assert(arr[10..n] == [0,1,2,3,4,5,6,7,8,9]);
+
+    // Appender
+    import std.array;
+    tok = json.jsonTokenizer;
+    auto app = appender!(int[]);
+    auto r3 = makeOutputRange!int(app);
+    tok.deserialize(r3);
+    assert(app.data[] == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
     auto jsonItem = tokenizer.nextSignificant
@@ -594,7 +687,7 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON") && !isInstanceOf!(OutputRange, T))
 {
     // check to see if any member is defined as the representation
     alias representers = getSymbolsByUDA!(T, serializeAs);
