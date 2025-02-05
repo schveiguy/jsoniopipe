@@ -18,6 +18,7 @@
  * Authors: Steven Schveighoffer
 */
 module iopipe.json.parser;
+public import iopipe.json.common;
 import iopipe.traits;
 import iopipe.bufpipe;
 import std.range.primitives;
@@ -1752,17 +1753,26 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
     /**
      * Seek to a position in the json object. Accepts string keys and integral array indexes.
+     *
+     * An argument of type ReleasePolicy is also allowed. Call with param ReleasePolicy.afterMembers
+     * as first argument to make sure items are released from the chain during seeking. By default,
+     * release isn't called.
      */
     bool parseTo(Ts...)(Ts submembers) if(Ts.length >= 2)
     {
+        ReleasePolicy relPol = ReleasePolicy.never;
         bool found = true;
 	static foreach(sub; submembers){{
             alias T = typeof(sub);
-            static if(is(T == string))
+            static if(is(T == ReleasePolicy))
+	    {
+                relPol = sub;
+            }
+            else static if(is(T == string))
             {
 		found &= parseTo(sub);
             } 
-            else static if(isIntegral!T)
+            else static if(isIntegral!T && !is(T == ReleasePolicy))
             {
                 assert(sub >= 0);
 		found &= parseTo(cast(ulong)sub);
@@ -1771,6 +1781,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             {
                 static assert(false, T.stringof ~ ` not supported. Only strings for keys and integral types for indexes are allowed`);
             }
+            if(relPol == ReleasePolicy.afterMembers)
+                releaseParsed;
             if(!found)
                 return false;
 	}}
