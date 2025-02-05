@@ -30,6 +30,7 @@ import std.meta;
 import std.typecons : Nullable;
 import std.conv;
 import std.format;
+import std.sumtype;
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -1175,6 +1176,10 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
             break;
         }
     }
+    else static if(isInstanceOf!(SumType, T))
+    {
+        val.match!( v => serializeImpl(w,v));
+    }
     else static if(__traits(hasMember, T, "toJSON"))
     {
         val.toJSON(w);
@@ -1228,6 +1233,15 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
         serializeAllMembers(w, val);
         w("}");
     }
+}
+
+// serialize sumtype
+unittest
+{
+    alias S = SumType!(int, string);
+
+    S[2] s = [S(3), S("test")];
+    assert(serialize(s) == `[3, "test"]`);
 }
 
 // null class members
