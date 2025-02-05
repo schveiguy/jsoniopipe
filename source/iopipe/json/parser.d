@@ -18,6 +18,7 @@
  * Authors: Steven Schveighoffer
 */
 module iopipe.json.parser;
+public import iopipe.json.common;
 import iopipe.traits;
 import iopipe.bufpipe;
 import iopipe.buffer;
@@ -2048,8 +2049,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
 
     /**
-     * Parse until it finds a specific member/submember. The assumption is that
-     * the current item is an object start.
+     * Parse until it finds the member with the specified key. The 
+     * assumption is that the current item is an object start.
     
      * Returns true if the specified submember was found, and the parser is
      * queued to parse the value of that member.
@@ -2059,46 +2060,99 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * potentially partly advanced. Use caching to rewind if you don't wish to
      * lose the current position.
     
-     * Also returns false if this is not an object.
+     * Also returns false if this is not an object without consuming anything.
      */
-    bool parseTo(string[] submember...)
+    bool parseTo(string key)
     {
         import std.algorithm : equal;
-        while(submember.length > 0)
+        // jump into the first member.
+        if(peek != JSONToken.ObjectStart)
+            return false;
+        cast(void)next; // skip the object start
+        auto nt = peekSignificant();
+        if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
+            return false;
+        auto item = next;
+        while(!item.data.equal(key))
         {
-            // jump into the first member.
-            if(peek != JSONToken.ObjectStart)
+            cast(void)skipItem();
+            auto nextItem = peekSignificant();
+            if(nextItem == JSONToken.ObjectEnd)
                 return false;
-            cast(void)next; // skip the object start
-            auto nt = peekSignificant();
-            if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
-                return false;
-            auto item = next;
-            while(!item.data().equal(submember[0]))
+            else if(nextItem == JSONToken.Comma)
             {
-                cast(void)skipItem();
-                auto nextItem = peekSignificant();
-                if(nextItem == JSONToken.ObjectEnd)
-                    return false;
-                else if(nextItem == JSONToken.Comma)
-                {
-                    cast(void)next; // skip the comma
-                    item = next; // load the next thing
-                    if(config.JSON5 && item.token == JSONToken.ObjectEnd)
-                        return false;
-                }
-                else
-                    // something went wrong.
+                cast(void)next; // skip the comma
+                item = next; // load the next thing
+                if(config.JSON5 && item.token == JSONToken.ObjectEnd)
                     return false;
             }
-            // found the item
-            if(peekSignificant() != JSONToken.Colon)
+            else
+                // something went wrong.
                 return false;
-            item = next;
-            submember = submember[1 .. $];
         }
+        // found the item
+        if(peekSignificant() != JSONToken.Colon)
+            return false;
+        item = next;
 
         return true;
+    }
+
+    /** From an ArrayStart, consume until the specified index.
+     
+     * Returns false on error or EOF. The parser will have consumed the comma after item (idx-1) and will point to the beginning of the next element.
+     * In case of error, the unexpected element will not have been consumed.
+     */
+    bool parseTo(ulong idx)
+    {
+        if(peek != JSONToken.ArrayStart)
+            return false;
+        cast(void)next;
+        for(ulong i = 0; i < idx; i++){
+            auto nextToken = skipItem();
+            if(nextToken != JSONToken.Comma || nextToken == JSONToken.EOF)
+                return false;
+            cast(void)next(); //consume the comma
+        }
+        return true;
+    }
+
+    /**
+     * Seek to a position in the json object. Accepts string keys and integral array indexes.
+     *
+     * An argument of type ReleasePolicy is also allowed. Call with param ReleasePolicy.afterMembers
+     * as first argument to make sure items are released from the chain during seeking. By default,
+     * release isn't called.
+     */
+    bool parseTo(Ts...)(Ts submembers) if(Ts.length >= 2)
+    {
+        ReleasePolicy relPol = ReleasePolicy.never;
+        bool found = true;
+	static foreach(sub; submembers){{
+            alias T = typeof(sub);
+            static if(is(T == ReleasePolicy))
+	    {
+                relPol = sub;
+            }
+            else static if(is(T == string))
+            {
+		found &= parseTo(sub);
+            }
+            else static if(isIntegral!T && !is(T == ReleasePolicy))
+            {
+                assert(sub >= 0);
+		found &= parseTo(cast(ulong)sub);
+            }
+            else
+            {
+                static assert(false, T.stringof ~ ` not supported. Only strings for keys and integral types for indexes are allowed`);
+            }
+            if(relPol == ReleasePolicy.afterMembers)
+                flushCache;
+            if(!found)
+                return false;
+	}}
+	return true;
     }
 
     /// where are we in the buffer
@@ -2507,6 +2561,10 @@ unittest
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
     assert(parser._chain.pos == jsonData.length);
+
+    parser.index = idx;
+    assert(parser.parseTo("b", "c", 1));
+    assert(check(parser.next, JSONToken.Number, "2"));
 }
 
 // JSON5 tests!
