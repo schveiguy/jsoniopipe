@@ -217,9 +217,8 @@ auto makeOutputRange(ElemT,R)(R range)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(OutputRange, T))
 {
-    auto jsonItem = tokenizer.nextSignificant;
-    //auto jsonItem = tokenizer.nextSignificant
-        //.jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
     // check for an empty array (special case)
     if(tokenizer.peek == JSONToken.ArrayEnd)
@@ -332,45 +331,13 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-// TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-
     import std.array : Appender;
-    auto app = Appender!T();
+    auto app = makeOutputRange!(ElementType!T)(Appender!T());
+    tokenizer.deserialize(app);
 
-    // check for an empty array (special case)
-    if(tokenizer.peek == JSONToken.ArrayEnd)
-    {
-        // parse it off
-        jsonItem = tokenizer.nextSignificant;
-        // nothing left to do
-        return;
-    }
-    // parse items and commas until we get an array end.
-    while(true)
-    {
-        typeof(item[0]) elem;
-        deserializeImpl(tokenizer, elem, relPol);
-        app ~= elem;
-        if(relPol == ReleasePolicy.afterMembers)
-            tokenizer.releaseParsed();
-        jsonItem = tokenizer.nextSignificant;
-        if(jsonItem.token == JSONToken.ArrayEnd)
-            break;
-        jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
-        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
-        {
-            // was a trailing comma. parse the array end and break
-            tokenizer.next;
-            break;
-        }
-    }
-
-    // fill in the data.
-    item = app.data;
+    item = app.r.data;
 }
 
 // Note, we don't test for string keys here, because the type might not be a
