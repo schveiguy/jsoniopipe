@@ -180,23 +180,26 @@ unittest {
 /**
  * Expect the given JSONItem to be a specific token.
  * Parameters:
- *      msg: Optional error message to display
+ *      msg: Optional error message in case of mismatch
  * Throws:
  *	JSONIopipeException on violation.
+ * Returns:
+ *      the input item
  */
-void jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) pure @safe
+JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
         import std.format;
         throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
     }
+    return item;
 }
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
     bool first = true;
     foreach(ref elem; item)
@@ -204,8 +207,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         if(!first)
         {
             // verify there's a comma
-            jsonItem = tokenizer.nextSignificant;
-            jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
+            jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
         }
         first = false;
         deserializeImpl(tokenizer, elem, relPol);
@@ -214,8 +217,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 
     // verify we got an end array element
-    jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+    jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
 }
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy pol) if (is(T == enum))
@@ -229,8 +232,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     else
     {
         // convert to the enum via the string name
-        auto jsonItem = tokenizer.nextSignificant;
-        jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
+        auto jsonItem = tokenizer.nextSignificant
+            .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
         item = jsonItem.data(tokenizer.chain).to!T;
     }
 }
@@ -238,8 +241,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 // TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
     import std.array : Appender;
     auto app = Appender!T();
@@ -282,8 +285,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 {
     assert(is(T == V[K], V, K)); // repeat here, because we need the key and value types.
 
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
 
     auto nextTok = tokenizer.peekSignificant();
     while(nextTok != JSONToken.ObjectEnd)
@@ -303,8 +306,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         K nextKey;
         tokenizer.deserializeImpl(nextKey, relPol);
 
-        jsonItem = tokenizer.nextSignificant();
-        jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
+        jsonItem = tokenizer.nextSignificant()
+            .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 
         V nextVal;
         tokenizer.deserializeImpl(nextVal, relPol);
@@ -329,8 +332,8 @@ unittest
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
 {
     import std.format : format;
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.Number, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
 
     auto str = jsonItem.data(tokenizer.chain);
     static if(isIntegral!T)
@@ -419,8 +422,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     // Use phobos `to`, we want to duplicate the string if necessary.
     import std.format : format;
 
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
 
     // this should not fail unless the data is non-unicode
     // TODO: may need to copy the data if not immutable
@@ -489,8 +492,8 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
 
     enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
 
-    auto jsonItem = tokenizer.nextSignificant;
-    jsonExpect(jsonItem, JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
 
     // look at each string, then parse the given values
     jsonItem = tokenizer.nextSignificant();
@@ -520,8 +523,8 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
         scope name = () => nameItem.data(tokenizer.chain);
         // TODO: handle names with unicode escapes
 
-        jsonItem = tokenizer.nextSignificant();
-        jsonExpect(jsonItem, JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
+        jsonItem = tokenizer.nextSignificant()
+            .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 OBJ_MEMBER_SWITCH:
         switch(name())
         {
