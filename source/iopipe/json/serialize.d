@@ -26,8 +26,10 @@ import iopipe.bufpipe;
 import std.range.primitives;
 
 import std.traits;
+import std.meta;
 import std.typecons : Nullable;
 import std.conv;
+import std.format;
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -129,7 +131,7 @@ struct alternateName
  * The alternate name is not optional
  */
 unittest {
-	import std.exception;
+    import std.exception;
     static struct T {
         @alternateName("alternate") string name;
     }
@@ -190,7 +192,6 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
 {
     if(item.token != expectedToken)
     {
-        import std.format;
         throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
     }
     return item;
@@ -331,7 +332,6 @@ unittest
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
 {
-    import std.format : format;
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
 
@@ -400,7 +400,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == bool))
 {
-    import std.format : format;
     auto jsonItem = tokenizer.nextSignificant;
     if(jsonItem.token == JSONToken.True)
     {
@@ -412,7 +411,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     }
     else
     {
-        import std.format;
         throw new JSONIopipeException(format("Parsing bool: expected %s or %s , but got %s", JSONToken.True, JSONToken.False, jsonItem.token));
     }
 }
@@ -420,7 +418,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isSomeString!T)
 {
     // Use phobos `to`, we want to duplicate the string if necessary.
-    import std.format : format;
 
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
@@ -432,8 +429,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
 
 private template SerializableMembers(T)
 {
-    import std.traits;
-    import std.meta;
     enum WithoutIgnore(string s) = !hasUDA!(__traits(getMember, T, s), ignore);
     static if(is(T == struct))
         enum SerializableMembers = Filter!(WithoutIgnore, FieldNameTuple!T);
@@ -443,8 +438,6 @@ private template SerializableMembers(T)
 
 private template AllIgnoredMembers(T)
 {
-    import std.traits;
-    import std.meta;
     static if(is(T == struct))
         enum AllIgnoredMembers = getUDAs!(T, IgnoredMembers);
     else
@@ -453,7 +446,6 @@ private template AllIgnoredMembers(T)
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    import std.meta;
     enum isRef(string s) = s == "ref";
     static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
         "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
@@ -575,7 +567,6 @@ OBJ_MEMBER_SWITCH:
             }}
             else
             {
-                import std.format : format;
                 throw new JSONIopipeException(format("No member named '%s' in type `%s`", name, T.stringof));
             }
         }
@@ -595,7 +586,6 @@ OBJ_MEMBER_SWITCH:
         {
             // this is a bit ugly, but gives a nicer message.
             static immutable marr = [members];
-            import std.format;
             import std.range : enumerate;
             throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
         }
@@ -605,7 +595,6 @@ OBJ_MEMBER_SWITCH:
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     // check to see if any member is defined as the representation
-    import std.traits;
     alias representers = getSymbolsByUDA!(T, serializeAs);
     static if(representers.length > 0)
     {
@@ -1269,7 +1258,6 @@ unittest
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
 {
-    import std.format;
     formattedWrite(w, "%s", val);
 }
 
