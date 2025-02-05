@@ -1355,16 +1355,18 @@ mixin template VirtualToJSON()
     }
 }
 
-// Class based runtime polymorphism helpers
+/// Class based runtime polymorphism helpers
 unittest
 {
-    static class C : JSONSerializable {
+    static class C : JSONSerializable 
+    {
         this(int x){this.x = x;}
         int x;
         mixin VirtualToJSON;
 
     }
-    static class D: JSONSerializable {
+    static class D: JSONSerializable 
+    {
         this(string s){this.s=s;}
         string s;
         mixin VirtualToJSON;
