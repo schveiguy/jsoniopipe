@@ -2009,7 +2009,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Returns:
      * 	 The last item consumed, so either a closing ArrayEnd or ObjectEnd or EOF
      */
-    JSONItem leaveNestingLevel(long depth=1)
+    JSONItem leaveNestingLevel(ulong depth=1)
     { 
         assert(depth >= 1, "Leaving less than 0 level would make no sense.");
 
