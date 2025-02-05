@@ -2002,7 +2002,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     
 
     /** Seek until leaving the current object or array. 
-     * When next item will be ObjectStart or ArrayStart, will behave exactly as JSONItem.skipItem()
+     * When next item will be ObjectStart or ArrayStart, will behave similar to JSONItem.skipItem(), but without consuming the ArrayEnd/ObjectEnd
      
      * Params:
      * 	 depth = How many levels to leave. 1-indexed
