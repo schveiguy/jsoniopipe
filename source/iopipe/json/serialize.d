@@ -1331,6 +1331,48 @@ string serialize(T)(auto ref T val)
     return result.assumeUnique;
 }
 
+/**
+ * Use with `mixin VirtualToJSON()` for runtime polymorphism
+ */
+interface JSONSerializable 
+{
+    void toJSON(scope void delegate(const(char)[]) w) const;
+}
+
+/**
+ * Mixin that creates a toJSON method that behaves exactly as if the class didn't 
+ * have a toJSON method and this library would try to serialize an object by itself.
+ 
+ * This can be used for runtime polymorphism as an alternative to SumType.
+ */
+mixin template VirtualToJSON() 
+{
+    void toJSON(scope void delegate(const(char)[]) w) const 
+    {
+        w("{");
+            serializeAllMembers(w, this);
+        w("}");
+    }
+}
+
+// Class based runtime polymorphism helpers
+unittest
+{
+    static class C : JSONSerializable {
+        this(int x){this.x = x;}
+        int x;
+        mixin VirtualToJSON;
+
+    }
+    static class D: JSONSerializable {
+        this(string s){this.s=s;}
+        string s;
+        mixin VirtualToJSON;
+    }
+    JSONSerializable[] n = cast(JSONSerializable[])[new C(5), new D("test")];
+    assert(serialize(n) == `[{"x" : 5}, {"s" : "test"}]`);
+}
+
 unittest
 {
     auto str1 = serialize(1);
