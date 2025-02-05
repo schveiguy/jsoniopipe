@@ -450,7 +450,10 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
         "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
     //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
-    item = T.fromJSON(tokenizer, relPol);
+    static if(Parameters!(T.fromJSON!JT).length == 1)
+        item = T.fromJSON(tokenizer);
+    else
+        item = T.fromJSON(tokenizer, relPol);
 }
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
@@ -1498,6 +1501,26 @@ unittest
     }
 
     assert(`{"x": 5}`.deserialize!S == S(5,10));
+}
+
+// fromJSON releasePolicy is optional
+unittest
+{
+    static struct S
+    {
+        int x;
+        static S fromJSON(JT)(ref JT tokenizer)
+        {
+            tokenizer.nextSignificant;
+            tokenizer.nextSignificant;
+            tokenizer.nextSignificant;
+            auto val = tokenizer.nextSignificant;
+	    int x = val.data(tokenizer.chain).to!int;
+            return S(x);
+        }
+    }
+
+    assert(`{"x": 5}`.deserialize!S == S(5));
 }
 
 /** This example demonstrates the invariants of fromJSON
