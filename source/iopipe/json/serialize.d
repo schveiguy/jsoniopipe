@@ -179,10 +179,12 @@ unittest {
 
 /**
  * Expect the given JSONItem to be a specific token.
+ * Parameters:
+ *      msg: Optional error message to display
  * Throws:
  *	JSONIopipeException on violation.
  */
-void jsonExpect(JSONItem item, JSONToken expectedToken, string msg, string file = __FILE__, size_t line = __LINE__) pure @safe
+void jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) pure @safe
 {
     if(item.token != expectedToken)
     {
