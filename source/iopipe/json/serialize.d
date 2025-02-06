@@ -210,9 +210,39 @@ struct OutputRange(R_, ElemT_)
     alias this = r;
 }
 
+struct OutputRange(R_: U*, U, ElemT_)
+{
+    static assert(isOutputRange!(U, ElemT), "*R must be valid output range of ElemT");
+    alias R = R_;
+    alias ElemT = ElemT_;
+    R r;
+    alias this = r;
+
+    this(R r)
+    {
+        this.r = r;
+    }
+
+    void put(ElemT_ e)
+    {
+        put(*r, e);
+    }
+    
+    void put(ElemT_[] es)
+    {
+        put(*r, es);
+    }
+}
+
+auto makeOutputRange(ElemT, R: U*, U)(R range)
+{
+    static assert(isOutputRange!(U, ElemT), "U must be valid output range of ElemT");
+    return OutputRange!(R, U, ElemT)(range);
+}
+
 auto makeOutputRange(ElemT,R)(R range)
 {
-    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    static assert(isOutputRange!(R, ElemT), "*R must be valid output range of ElemT");
     return OutputRange!(R, ElemT)(range);
 }
 
@@ -287,6 +317,26 @@ unittest
     auto r3 = makeOutputRange!int(app);
     tok.deserialize(r3);
     assert(app.data[] == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+unittest
+{
+   static struct S 
+   {
+       int [] numbers;
+       void opCall(int i)
+       {
+           numbers ~= i;
+       }
+   }
+   S s;
+   foreach(i;0..6)
+       s(i);
+    auto json = `[6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    auto r = makeOutputRange!(int)(&s);
+    tok.deserialize(r);
+    assert(s.numbers == [0,1,2,3,4,5,6,7,8,9]);
 }
 
 
