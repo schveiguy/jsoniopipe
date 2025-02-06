@@ -207,6 +207,7 @@ struct OutputRange(R_, ElemT_)
     alias R = R_;
     alias ElemT = ElemT_;
     R r;
+    alias this = r;
 }
 
 auto makeOutputRange(ElemT,R)(R range)
@@ -215,7 +216,7 @@ auto makeOutputRange(ElemT,R)(R range)
     return OutputRange!(R, ElemT)(range);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(OutputRange, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(OutputRange, T))
 {
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -233,7 +234,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     {
         T.ElemT elem;
         deserializeImpl(tokenizer, elem, relPol);
-        put(item.r, elem);
+        put(outputRange, elem);
         if(relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
         jsonItem = tokenizer.nextSignificant;
@@ -337,7 +338,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     auto app = makeOutputRange!(ElementType!T)(Appender!T());
     tokenizer.deserialize(app);
 
-    item = app.r.data;
+    item = app.data;
 }
 
 // Note, we don't test for string keys here, because the type might not be a
