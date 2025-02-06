@@ -201,7 +201,7 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
  * Wrapper struct to pass output ranges to deserialize. This is needed because there is no general way to determine 
  * the element type of an output range, it's often templated. Even the phobos `isOutputRange` requires an element type.
  */
-struct OutputRange(R_, ElemT_)
+struct JOutputRange(R_, ElemT_)
 {
     static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
     alias R = R_;
@@ -210,7 +210,7 @@ struct OutputRange(R_, ElemT_)
     alias this = r;
 }
 
-struct OutputRange(R_: U*, U, ElemT_)
+struct JOutputRange(R_: U*, U, ElemT_)
 {
     static assert(isOutputRange!(U, ElemT), "*R must be valid output range of ElemT");
     alias R = R_;
@@ -234,19 +234,19 @@ struct OutputRange(R_: U*, U, ElemT_)
     }
 }
 
-auto makeOutputRange(ElemT, R: U*, U)(R range)
+auto jOutputRange(ElemT, R: U*, U)(R range)
 {
     static assert(isOutputRange!(U, ElemT), "U must be valid output range of ElemT");
-    return OutputRange!(R, U, ElemT)(range);
+    return JOutputRange!(R, U, ElemT)(range);
 }
 
-auto makeOutputRange(ElemT,R)(R range)
+auto jOutputRange(ElemT,R)(R range)
 {
     static assert(isOutputRange!(R, ElemT), "*R must be valid output range of ElemT");
-    return OutputRange!(R, ElemT)(range);
+    return JOutputRange!(R, ElemT)(range);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(OutputRange, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(JOutputRange, T))
 {
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -289,7 +289,7 @@ unittest
     auto insert = (int i){arr[n++] = i;};
 
     static assert(isOutputRange!(typeof(insert), int), "test");
-    auto r = makeOutputRange!int(insert);
+    auto r = jOutputRange!int(insert);
 
     auto json = `[0,1,2,3,4,5,6,7,8,9]`;
     auto tok = json.jsonTokenizer;
@@ -305,7 +305,7 @@ unittest
         }
     }
     tok = json.jsonTokenizer;
-    auto r2= makeOutputRange!int(S());
+    auto r2= jOutputRange!int(S());
     tok.deserialize(r2);
     assert(n==20);
     assert(arr[10..n] == [0,1,2,3,4,5,6,7,8,9]);
@@ -314,7 +314,7 @@ unittest
     import std.array;
     tok = json.jsonTokenizer;
     auto app = appender!(int[]);
-    auto r3 = makeOutputRange!int(app);
+    auto r3 = jOutputRange!int(app);
     tok.deserialize(r3);
     assert(app.data[] == [0,1,2,3,4,5,6,7,8,9]);
 }
@@ -334,7 +334,7 @@ unittest
        s(i);
     auto json = `[6,7,8,9]`;
     auto tok = json.jsonTokenizer;
-    auto r = makeOutputRange!(int)(&s);
+    auto r = jOutputRange!(int)(&s);
     tok.deserialize(r);
     assert(s.numbers == [0,1,2,3,4,5,6,7,8,9]);
 }
@@ -385,7 +385,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     import std.array : Appender;
-    auto app = makeOutputRange!(ElementType!T)(Appender!T());
+    auto app = jOutputRange!(ElementType!T)(Appender!T());
     tokenizer.deserialize(app);
 
     item = app.data;
@@ -705,7 +705,7 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON") && !isInstanceOf!(OutputRange, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON") && !isInstanceOf!(JOutputRange, T))
 {
     // check to see if any member is defined as the representation
     alias representers = getSymbolsByUDA!(T, serializeAs);
