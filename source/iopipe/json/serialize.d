@@ -223,15 +223,8 @@ struct JOutputRange(R_: U*, U, ElemT_)
         this.r = r;
     }
 
-    void put(ElemT_ e)
-    {
-        put(*r, e);
-    }
-    
-    void put(ElemT_[] es)
-    {
-        put(*r, es);
-    }
+    // void put(...) doesn't compile
+    void opCall(ElemT e) => put(*r, e);
 }
 
 auto jOutputRange(ElemT, R: U*, U)(R range)
