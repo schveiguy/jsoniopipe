@@ -690,6 +690,7 @@ T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afte
     return result;
 }
 
+/// `Chain c` will accept a string too.
 T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
