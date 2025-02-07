@@ -293,9 +293,12 @@ unittest
     auto json = `[0,1,2,3,4,5,6,7,8,9]`;
     auto tok = json.jsonTokenizer;
     tok.deserialize(r);
+    // Can also use JOutPutRange of insert als lvalue
+    tok = json.jsonTokenizer;
+    tok.deserialize(jOutputRange!int(&insert));
 
-    assert(n==10);
-    assert(arr[0..n] == [0,1,2,3,4,5,6,7,8,9]);
+    assert(n==20);
+    assert(arr[0..20] == [0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9]);
 
     // Structs work too
     struct S {
@@ -306,8 +309,8 @@ unittest
     tok = json.jsonTokenizer;
     auto r2= jOutputRange!int(S());
     tok.deserialize(r2);
-    assert(n==20);
-    assert(arr[10..n] == [0,1,2,3,4,5,6,7,8,9]);
+    assert(n==30);
+    assert(arr[20..n] == [0,1,2,3,4,5,6,7,8,9]);
 
     // Appender
     import std.array;
@@ -828,9 +831,14 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 void deserialize(T, JT)(ref JT tokenizer,auto ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
     // Since JOutputRange with a pointer already has reference semantics, it can be used as an rvalue without issues.
+    // lvalue of a wrapper around a delegate or function also makes little sense
     static if(!__traits(isRef, item))
     {
-        static assert(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT), "rvalue only allowed for JOutputRange with Reference");
+        static assert(
+                is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT) || 
+                (is(T == JOutputRange!(FunOrDelegate, ElemT), FunOrDelegate, ElemT) && is(FunOrDelegate == return))
+                , "rvalue only allowed for JOutputRange with Reference"
+            );
     }
     deserializeImpl(tokenizer, item, relPol);
 }
@@ -840,7 +848,11 @@ void deserialize(T, Chain)(auto ref Chain c, auto ref T item) if (isIopipe!Chain
 {
     static if(!__traits(isRef, item))
     {
-        static assert(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT), "rvalue only allowed for JOutputRange with Reference");
+        static assert(
+                is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT) || 
+                (is(T == JOutputRange!(FunOrDelegate, ElemT), FunOrDelegate, ElemT) && is(FunOrDelegate == return))
+                , "rvalue only allowed for JOutputRange with Reference"
+            );
     }
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
