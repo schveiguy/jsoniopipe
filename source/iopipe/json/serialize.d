@@ -227,7 +227,13 @@ struct JOutputRange(R_: U*, U, ElemT_)
     void opCall(ElemT e) => put(*r, e);
 }
 
-auto jOutputRange(ElemT, R: U*, U)(R range)
+auto refJOutputRange(ElemT, R)(return ref scope R r)
+{
+    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    return jOutputRange!ElemT(&r);
+}
+
+auto jOutputRange(ElemT, R: U*, U)(return scope R range)
 {
     static assert(isOutputRange!(U, ElemT), "U must be valid output range of ElemT");
     return JOutputRange!(R, U, ElemT)(range);
@@ -330,6 +336,24 @@ unittest
     auto r = jOutputRange!(int)(&s);
     tok.deserialize(r);
     assert(s.numbers == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+/** refJOutputRange can be passed as rvalue.
+ * Realistically, most of the time you don't need refJOutputRange as an lvalue, allowing you to just wrap the range at the call site
+ */
+unittest
+{
+    import std.array;
+    auto r = appender!(int[]);
+    auto json = `[0,1,2,3,4,5,6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    tok.deserialize(r.refJOutputRange!int);
+    assert(r.data == [0,1,2,3,4,5,6,7,8,9]);
+
+    // also works directly via chain
+    r = appender!(int[]);
+    json.deserialize(r.refJOutputRange!int);
+    assert(r.data == [0,1,2,3,4,5,6,7,8,9]);
 }
 
 
@@ -801,15 +825,23 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
     return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
 
-/// ditto
-void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
+void deserialize(T, JT)(ref JT tokenizer,auto ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
+    // Since JOutputRange with a pointer already has reference semantics, it can be used as an rvalue without issues.
+    static if(!__traits(isRef, item))
+    {
+        static assert(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT), "rvalue only allowed for JOutputRange with Reference");
+    }
     deserializeImpl(tokenizer, item, relPol);
 }
 
 /// ditto
-void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
+void deserialize(T, Chain)(auto ref Chain c, auto ref T item) if (isIopipe!Chain)
 {
+    static if(!__traits(isRef, item))
+    {
+        static assert(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT), "rvalue only allowed for JOutputRange with Reference");
+    }
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
