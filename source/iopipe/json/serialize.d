@@ -425,6 +425,36 @@ unittest
     assert(s.n.overFive == [false, true]);
 }
 
+/* Issue: No context pointer: function `m` is not callable using argument types `()`; too few arguments, expected 1, got 0
+* Also: It would be nicer to just annotate functions with an UDA instead of wrapping them.
+* This can easily be worked around by having a range with opCall or put methods as a member, but maybe a method could be more powerful if you want
+* to access context from the parent struct.
+* See the example of why a context would be useful:
+*/
+unittest
+{
+    static assert(!__traits(compiles, {
+        // Merge two number lists of different types into one storage
+        static struct S 
+        {
+            @ignore int arr;
+            void numbers(string i)
+            {
+                arr ~= i.to!string;
+            }
+            void numbers(double i)
+            {
+                arr ~= cast(int) i;
+            }
+            JOutputRange!(m) s;
+            JOutputRange!(m) d;
+        }
+        auto json = `{"s": ["1", "2"], "d": [3.0, 4.0]}`;
+        auto s = json.deserialize!S;
+        assert(s.arr == [1,2,3,4] || s.arr == [3,4,1,2]);
+    }));
+}
+
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
