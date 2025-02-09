@@ -197,6 +197,40 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
+/** Since JOutputRange with a pointer already has reference semantics, it can be used as an rvalue without issues. 
+ * lvalue of a wrapper around a delegate or function also makes little sense.
+ */
+private template rvalueAllowed(T)
+{
+    static if(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT))
+        enum rvalueAllowed = true;
+    // For some reason this doesn't match
+    // else static if(is(T == JOutputRange!(Fun), Fun)){
+    else static if(is(typeof(T.R) == return)){
+        enum rvalueAllowed = true;
+    }
+    else
+        enum rvalueAllowed = false;
+}
+
+template JOutputRange(alias Fun)
+{
+    static assert(is(typeof(Fun) ret == return) && is(ret == void));
+    static assert(Parameters!Fun.length == 1);
+    struct JOutputRange
+    {
+        alias R = Fun;
+        alias ElemT = Parameters!R[0];
+        alias r = Fun;
+        void put(ElemT e) => std.range.put(R, e);
+    }
+    /* Instead, we could just alias the Function/ delegate and skip the empty struct like this:
+    * alias JOutputRange = Fun;
+    * but then we would need another deserializeImpl without the argument `ref T item`, and instead moving
+    * that as a template arg and otherwise doing the same thing as the current implementation for JOutputRange.
+    */
+}
+
 /**
  * Wrapper struct to pass output ranges to deserialize. This is needed because there is no general way to determine 
  * the element type of an output range, it's often templated. Even the phobos `isOutputRange` requires an element type.
@@ -204,6 +238,7 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
 struct JOutputRange(R_, ElemT_)
 {
     static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    static assert(!is(R_ == return), "Giving element type for function/delegate is unnecessary. Omit it and the library will infer it.");
     alias R = R_;
     alias ElemT = ElemT_;
     R r;
@@ -223,7 +258,8 @@ struct JOutputRange(R_: U*, U, ElemT_)
         this.r = r;
     }
 
-    // void put(...) doesn't compile
+    // put doesn't compile. opCall is fine for output ranges, but can lead to confusing error messages if the compiler mixes up opCall and the constructor
+    // void put(ElemT e) => std.range.put(*r, e);
     void opCall(ElemT e) => put(*r, e);
 }
 
@@ -232,6 +268,15 @@ auto refJOutputRange(ElemT, R)(return ref scope R r)
     static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
     return jOutputRange!ElemT(&r);
 }
+
+auto jOutputRange(alias Fun)()
+{
+    // Need this wrapper function since JOutputRange!Fun is an empty struct.
+    // This interferes with UFCS sometimes, as the compiler has to decide whether we are referencing the struct or the (empty) constructor.
+    // Thus we need the parentheses here
+    return JOutputRange!Fun();
+}
+
 
 auto jOutputRange(ElemT, R: U*, U)(return scope R range)
 {
@@ -288,13 +333,15 @@ unittest
     auto insert = (int i){arr[n++] = i;};
 
     static assert(isOutputRange!(typeof(insert), int), "test");
-    auto r = jOutputRange!int(insert);
+    //auto r = jOutputRange!int(insert);
 
     auto json = `[0,1,2,3,4,5,6,7,8,9]`;
     auto tok = json.jsonTokenizer;
-    tok.deserialize(r);
-    // Can also use JOutPutRange of insert als lvalue
+    // rvalue allowed for aliased function
+    tok.deserialize(jOutputRange!insert);
     tok = json.jsonTokenizer;
+    // rvalue allowed when JOutputRange wraps pointer
+    // Maybe wrapping a function pointer should be forbidden, but I don't see why it hurts
     tok.deserialize(jOutputRange!int(&insert));
 
     assert(n==20);
@@ -357,6 +404,25 @@ unittest
     r = appender!(int[]);
     json.deserialize(r.refJOutputRange!int);
     assert(r.data == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+/// Struct with outputrange member to map over the data
+unittest
+{
+   static struct ORange
+   {
+       bool[] overFive;
+       void opCall(int i)
+       {
+           overFive ~= i > 5;
+       }
+   }
+    static struct S {
+        JOutputRange!(ORange, int) n;
+    }
+    auto json = `{"n": [0,10]}`;
+    auto s = json.deserialize!S;
+    assert(s.n.overFive == [false, true]);
 }
 
 
@@ -830,15 +896,9 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 
 void deserialize(T, JT)(ref JT tokenizer,auto ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    // Since JOutputRange with a pointer already has reference semantics, it can be used as an rvalue without issues.
-    // lvalue of a wrapper around a delegate or function also makes little sense
     static if(!__traits(isRef, item))
     {
-        static assert(
-                is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT) || 
-                (is(T == JOutputRange!(FunOrDelegate, ElemT), FunOrDelegate, ElemT) && is(FunOrDelegate == return))
-                , "rvalue only allowed for JOutputRange with Reference"
-            );
+        static assert(rvalueAllowed!T, "rvalue only allowed for JOutputRange with Reference or function/delegate");
     }
     deserializeImpl(tokenizer, item, relPol);
 }
@@ -848,11 +908,7 @@ void deserialize(T, Chain)(auto ref Chain c, auto ref T item) if (isIopipe!Chain
 {
     static if(!__traits(isRef, item))
     {
-        static assert(
-                is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT) || 
-                (is(T == JOutputRange!(FunOrDelegate, ElemT), FunOrDelegate, ElemT) && is(FunOrDelegate == return))
-                , "rvalue only allowed for JOutputRange with Reference"
-            );
+        static assert(rvalueAllowed!T, "rvalue only allowed for JOutputRange with Reference or function/delegate");
     }
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
