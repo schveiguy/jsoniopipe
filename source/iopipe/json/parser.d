@@ -824,7 +824,7 @@ unittest
     }
 
     testParse!false(q"{"abcdef"}", false);
-    // testParse!false(q"{"abcdef}", true); // use different string here to molify github syntax highlighting
+    // Use different string here to mollify github syntax highlighting
     testParse!false(`"abcdef`, true);
     testParse!true(q"{"abcdef"}".dup, false);
     testParse!true(q"{"abcdef\n"}".dup, false, JSONParseHint.InPlace, 7, "abcdef\n");
