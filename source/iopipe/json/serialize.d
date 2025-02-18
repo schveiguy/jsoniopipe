@@ -1808,5 +1808,5 @@ unittest
         int x;
     }
     auto tokenizer = `{"x": 1}`.jsonTokenizer;
-    JSONIopipeException(tokenizer.deserialize!S).assertThrown;
+    tokenizer.deserialize!S.assertThrown;
 }
