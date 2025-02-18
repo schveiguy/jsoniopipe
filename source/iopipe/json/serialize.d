@@ -496,7 +496,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-// TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     import std.array : Appender;
@@ -704,12 +703,13 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
 {
     // expect an object in JSON. We want to deserialize the JSON data
     import std.meta;
+    import std.bitmanip;
     alias members = AliasSeq!(SerializableMembers!T, SerializableFunctions!T);
     alias ignoredMembers = AllIgnoredMembers!T;
 
-    // TODO use bit array instead and core.bitop
-    //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
-    bool[members.length] visited;
+    bool[members.length/8 + 8] bitBuffer;
+    BitArray visited = BitArray(bitBuffer[]);
+    visited.length = members.length;
 
     // any members that are optional, mark as already visited
     static foreach(idx, m; members)
@@ -839,13 +839,15 @@ OBJ_MEMBER_SWITCH:
     static if(members.length)
     {
         import std.algorithm : canFind, map, filter;
-        if(visited[].canFind(false))
+        if(visited.count != members.length)
         {
             // this is a bit ugly, but gives a nicer message.
             static immutable marr = [members];
             import std.format;
             import std.range : enumerate;
-            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+	    // Flip first, so bitSet returns only the unset bits
+	    visited.flip;
+            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited.bitsSet.map!(a => marr[a])));
         }
     }
 }
@@ -1818,4 +1820,17 @@ unittest
     buf[].deserialize(str);
     assert(str == "\"hello, world\n\"");
     assert(str.ptr >= buf.ptr && str.ptr < buf.ptr + buf.length);
+}
+
+// Throw if not every member is visited
+unittest
+{
+    import std.exception;
+    static struct S
+    {
+	int missing;
+        int x;
+    }
+    auto tokenizer = `{"x": 1}`.jsonTokenizer;
+    tokenizer.deserialize!S.assertThrown!JSONIopipeException;
 }
