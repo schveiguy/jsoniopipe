@@ -222,7 +222,9 @@ template JOutputRange(alias Fun)
         alias R = Fun;
         alias ElemT = Parameters!R[0];
         alias r = Fun;
-        void put(ElemT e) => std.range.put(R, e);
+        // Calling the function directly works better than `std.range.put` in some cases.
+        void put(ElemT e) => Fun(e);
+        //void put(ElemT e) => std.range.put(Fun, e);
     }
     /* Instead, we could just alias the Function/ delegate and skip the empty struct like this:
     * alias JOutputRange = Fun;
@@ -290,7 +292,8 @@ auto jOutputRange(ElemT,R)(R range)
     return JOutputRange!(R, ElemT)(range);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(JOutputRange, T))
+
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(JOutputRange, T) || is(T == return))
 {
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
@@ -333,7 +336,6 @@ unittest
     auto insert = (int i){arr[n++] = i;};
 
     static assert(isOutputRange!(typeof(insert), int), "test");
-    //auto r = jOutputRange!int(insert);
 
     auto json = `[0,1,2,3,4,5,6,7,8,9]`;
     auto tok = json.jsonTokenizer;
@@ -347,7 +349,7 @@ unittest
     assert(n==20);
     assert(arr[0..20] == [0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9]);
 
-    // Structs work too
+    // Struct outputranges work too
     struct S {
         void put(int i){
             arr[n++] = i;
@@ -419,40 +421,41 @@ unittest
    }
     static struct S {
         JOutputRange!(ORange, int) n;
+        alias this = n;
     }
     auto json = `{"n": [0,10]}`;
     auto s = json.deserialize!S;
-    assert(s.n.overFive == [false, true]);
+    assert(s.overFive == [false, true]);
 }
 
-/* Issue: No context pointer: function `m` is not callable using argument types `()`; too few arguments, expected 1, got 0
-* Also: It would be nicer to just annotate functions with an UDA instead of wrapping them.
-* This can easily be worked around by having a range with opCall or put methods as a member, but maybe a method could be more powerful if you want
-* to access context from the parent struct.
-* See the example of why a context would be useful:
-*/
 unittest
 {
-    static assert(!__traits(compiles, {
-        // Merge two number lists of different types into one storage
-        static struct S 
+    static struct S 
+    {
+        @ignore int[] arr;
+        @deserializeFun void s(string i)
         {
-            @ignore int arr;
-            void numbers(string i)
-            {
-                arr ~= i.to!string;
-            }
-            void numbers(double i)
-            {
-                arr ~= cast(int) i;
-            }
-            JOutputRange!(m) s;
-            JOutputRange!(m) d;
+            arr ~= i.to!int;
         }
-        auto json = `{"s": ["1", "2"], "d": [3.0, 4.0]}`;
-        auto s = json.deserialize!S;
-        assert(s.arr == [1,2,3,4] || s.arr == [3,4,1,2]);
-    }));
+        @deserializeFun void d(double i)
+        {
+            arr ~= cast(int) i;
+        }
+    }
+    auto json = `{"s": ["1", "2"], "d": [3.0, 4.0]}`;
+    auto s = json.deserialize!S;
+    assert(s.arr == [1,2,3,4]);
+}
+
+/* Issue: When deserializing functions, return type must be void. This is annoying for short form lambda notation `(d) => acc += d` 
+ */
+unittest
+{
+    auto json = `[1,2,3,4]`;
+    int sum = 0;
+    static assert(!__traits(compiles, json.deserialize(jOutputRange!((double d) => sum += cast(int)d))));
+    json.deserialize(jOutputRange!((double d) => cast(void)(sum += cast(int)d)));
+    assert(sum == 10);
 }
 
 
@@ -662,6 +665,19 @@ private template SerializableMembers(T)
         enum SerializableMembers = Filter!(WithoutIgnore, staticMap!(FieldNameTuple, T, BaseClassesTuple!T));
 }
 
+enum deserializeFun;
+private template SerializableFunctions(T)
+{
+    import std.traits;
+    import std.meta;
+    enum WithDeserializeFuns(string s) = hasUDA!(__traits(getMember, T, s), deserializeFun);
+    //alias NameToSymbol(string s) = __traits(getMember, T, s);
+    enum isMethod(string s) = is(typeof(__traits(getMember, T, s)) == return);
+
+    enum SerializableFunctions = Filter!(isMethod,
+                Filter!(WithDeserializeFuns, __traits(allMembers, T)));
+}
+
 private template AllIgnoredMembers(T)
 {
     static if(is(T == struct))
@@ -685,7 +701,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
-    alias members = SerializableMembers!T;
+    import std.meta;
+    alias members = AliasSeq!(SerializableMembers!T, SerializableFunctions!T);
     alias ignoredMembers = AllIgnoredMembers!T;
 
     // TODO use bit array instead and core.bitop
@@ -759,7 +776,15 @@ OBJ_MEMBER_SWITCH:
                     else
                         enum jsonName = m;
                 case jsonName:
-                    tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                    static if(is(typeof(__traits(getMember, item, m)) == return))
+                    {
+                        alias ElemT = Parameters!(__traits(getMember, item, m))[0];
+                        // Need to wrap function call in a delegate due to dual context pointer issue
+                        auto j = jOutputRange!((ElemT s) => __traits(getMember, item, m)(s));
+                        tokenizer.deserialize(j, relPol);
+                    }
+                    else
+                        tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
                     visited[i] = true;
                     break OBJ_MEMBER_SWITCH;
                 }}
@@ -901,7 +926,6 @@ unittest
     auto s = deserialize!S(`{"c" : null}`);
     assert(s.c is null);
 }
-
 
 
 /** Deserialize the given type from the JSON data.
