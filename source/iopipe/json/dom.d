@@ -50,34 +50,8 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
         {
             JT result;
             result.type = JSONType.String;
-            if(item.hint == JSONParseHint.InPlace)
-            {
-                // get the data
-                // TODO: need to duplicate, even if it's the same type
-                result.str = item.data(parser.chain).to!SType;
-                return result;
-            }
-            else
-            {
-                // put the quotes back
-                item.offset--;
-                item.length += 2;
-
-                // re-parse, this time replacing escapes. This is so ugly...
-                static if(is(typeof(newpipe[] = parser.chain.window[])))
-                {
-                    auto newpipe = new Unqual!(typeof(SType.init[0]))[item.length];
-                    newpipe[] = item.data(parser.chain);
-                }
-                else
-                {
-                    auto newpipe = item.data(parser.chain).to!(Unqual!(typeof(SType.init[0]))[]);
-                }
-                size_t pos = 0;
-                auto len = parseString(newpipe, pos, item.hint);
-                result.str = cast(typeof(result.str))newpipe[1 .. 1 + len];
-                return result;
-            }
+            result.str = extractString!SType(item, parser.chain);
+            return result;
         }
     case Number:
         {
