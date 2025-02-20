@@ -785,6 +785,26 @@ unittest
     testParse!false(q"{"abcdef\ua123\n"}", false, JSONParseHint.Escapes);
 }
 
+/// utility function to extract a string while processing escapes. May or may not make a copy.
+T extractString(T, Chain)(JSONItem item, ref Chain c) if (isSomeString!T && isIopipe!Chain)
+{
+    import std.conv;
+    assert(item.token == JSONToken.String);
+    if(item.hint == JSONParseHint.InPlace)
+        return item.data(c).to!T;
+
+    // need to process it in place. This time replacing escapes. This is so ugly...
+    // put the quotes back
+    item.offset--;
+    item.length += 2;
+
+    // re-parse, this time replacing escapes. This is so ugly...
+    auto newpipe = item.data(c).to!(Unqual!(typeof(T.init[0]))[]);
+    size_t pos = 0;
+    auto len = parseString(newpipe, pos, item.hint);
+    return cast(T)newpipe[1 .. 1 + len];
+}
+
 /**
  * Parse/validate a number from the given iopipe. This is used to validate the
  * number follows the correct grammar from the JSON spec, and also to find out

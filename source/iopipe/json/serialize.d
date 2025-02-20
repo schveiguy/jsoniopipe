@@ -421,8 +421,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
 
     // this should not fail unless the data is non-unicode
-    // TODO: may need to copy the data if not immutable
-    item = jsonItem.data(tokenizer.chain).to!T;
+    item = extractString!T(jsonItem, tokenizer.chain);
 }
 
 private template SerializableMembers(T)
@@ -1533,4 +1532,13 @@ unittest
     auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
 
     assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
+}
+
+// issue #22
+unittest
+{
+    import std.stdio;
+    string json = `"\"test\n1\\2\""`;
+	string str = deserialize!string(json);
+	assert(str == "\"test\n1\\2\"");
 }
