@@ -705,7 +705,7 @@ void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = Rel
 
 void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
 {
-    enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
+    enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
 }
@@ -1537,8 +1537,24 @@ unittest
 // issue #22
 unittest
 {
-    import std.stdio;
     string json = `"\"test\n1\\2\""`;
 	string str = deserialize!string(json);
 	assert(str == "\"test\n1\\2\"");
+}
+
+// PR #23
+unittest
+{
+    auto jsonstr = `"\"hello, world\n\""`;
+    char[2048] buf;
+    buf[0 .. jsonstr.length] = jsonstr;
+    char[] str = buf[].deserialize!(char[]);
+    assert(str == "\"hello, world\n\"");
+    assert(str.ptr >= buf.ptr && str.ptr < buf.ptr + buf.length);
+
+    str = null;
+    buf[0 .. jsonstr.length] = jsonstr;
+    buf[].deserialize(str);
+    assert(str == "\"hello, world\n\"");
+    assert(str.ptr >= buf.ptr && str.ptr < buf.ptr + buf.length);
 }

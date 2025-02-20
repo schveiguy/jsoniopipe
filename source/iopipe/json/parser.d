@@ -799,7 +799,18 @@ T extractString(T, Chain)(JSONItem item, ref Chain c) if (isSomeString!T && isIo
     item.length += 2;
 
     // re-parse, this time replacing escapes. This is so ugly...
-    auto newpipe = item.data(c).to!(Unqual!(typeof(T.init[0]))[]);
+    alias Char = Unqual!(typeof(T.init[0]));
+    auto origData = item.data(c);
+    static if(is(Char == typeof(origData[0])))
+    {
+        // need to make sure we copy.
+        auto newpipe = new Char[origData.length];
+        newpipe[] = origData;
+    }
+    else
+    {
+        auto newpipe = origData.to!(Char[]);
+    }
     size_t pos = 0;
     auto len = parseString(newpipe, pos, item.hint);
     return cast(T)newpipe[1 .. 1 + len];
