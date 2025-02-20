@@ -694,7 +694,7 @@ T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afte
 
 T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
-    enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
+    enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1])); // @suppress(dscanner.suspicious.auto_ref_assignment)
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
