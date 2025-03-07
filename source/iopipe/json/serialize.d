@@ -1087,6 +1087,20 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isS
     w(`"`);
 }
 
+// Escape special characters
+unittest
+{
+    string raw = `\ and " must be escaped!`;
+    assert(raw.serialize == `"\\ and \" must be escaped!"`);
+}
+
+// Special characters must survive roundtrip.
+unittest
+{
+    string raw = `\ and " must be escaped!`;
+    assert(raw.serialize.deserialize!string == raw);
+}
+
 void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
 {
     // serialize as an object
