@@ -424,8 +424,13 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     static if(JT.config.replaceEscapes)
     {
         // this should not fail unless the data is non-unicode
-        // TODO: may need to copy the data if not immutable
-        item = onChain.to!T;
+        auto s = onChain.to!T;
+        // I couldn't find anything in the `to` docs that guarantees that is copies strings.
+        // In practice it does, but check it just to be sure
+        if(s.ptr != onChain.ptr)
+            item = s;
+        else
+            item = s.idup;
     }
     else
     {
