@@ -1083,8 +1083,12 @@ unittest
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
 {
+    import std.algorithm.iteration: substitute;
     w(`"`);
-    put(w, val);
+    put(w, val.substitute!(
+                `"`, `\"`,
+                `\`, `\\`,
+        ));
     w(`"`);
 }
 
