@@ -1099,6 +1099,16 @@ unittest
     assert(raw.serialize == `"\\ and \" must be escaped!"`);
 }
 
+// Special characters get removed with replaceEscapes
+unittest
+{
+    // replaceEscapes only works with mutable chains
+    auto c = `"\\ and \" must be escaped!"`.dup;
+    string expected = `\ and " must be escaped!`;
+    auto tokenizer = c.jsonTokenizer!(ParseConfig(replaceEscapes: true));
+    assert(tokenizer.deserialize!string == expected);
+}
+
 // Special characters must survive roundtrip.
 unittest
 {
