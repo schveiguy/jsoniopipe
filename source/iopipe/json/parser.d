@@ -1504,7 +1504,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
  */
 struct JSONTokenizer(Chain, ParseConfig cfg)
 {
-    alias config = cfg;
+    enum config = cfg;
     import std.bitmanip : BitArray;
 
     /**

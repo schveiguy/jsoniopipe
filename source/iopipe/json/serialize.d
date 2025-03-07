@@ -420,9 +420,118 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     auto jsonItem = tokenizer.nextSignificant;
     jsonExpect(jsonItem, JSONToken.String, "Parsing " ~ T.stringof);
 
-    // this should not fail unless the data is non-unicode
-    // TODO: may need to copy the data if not immutable
-    item = jsonItem.data(tokenizer.chain).to!T;
+    auto onChain = jsonItem.data(tokenizer.chain);
+    static if(JT.config.replaceEscapes)
+    {
+        // this should not fail unless the data is non-unicode
+        // TODO: may need to copy the data if not immutable
+        item = onChain.to!T;
+    }
+    else
+    {
+        import std.array: join;
+        import std.exception: assumeUnique;
+        auto r = JSONUnescaper!(typeof(onChain), Unqual!(typeof(item[0])), JT.config.JSON5)(onChain);
+        item = r.join.assumeUnique;
+    }
+}
+
+private struct JSONUnescaper(InString, OutChar, bool JSON5){
+    import std.utf: encode, byDchar;
+    alias DecodedInstring = typeof(byDchar(InString.init));
+    size_t i;
+    DecodedInstring unescapedString;
+    OutChar[4 / OutChar.sizeof] buf;
+    OutChar[] next;
+    bool isEmpty = false;
+    this(InString s){
+        unescapedString = s.byDchar;
+    }
+
+    bool empty() => isEmpty;
+    /// gets invalidated after next call to popFront. Copy if you want to use it later.
+    OutChar[] front() => this.next;
+    void popFront()
+    {
+        if(unescapedString.empty){
+            isEmpty = true;
+            return;
+        }
+
+        dchar c = unescapedString.front;
+        if(c == '\\')
+        {
+            unescapedString.popFront;
+            c = unescapedString.front();
+            dchar nextc;
+            
+            switch(c)
+            {
+                case '\\':
+                case '/':
+                case '"':
+                    nextc = c;
+                    break;
+                case 'n':
+                    nextc = '\n';
+                    break;
+                case 'b':
+                    nextc = '\b';
+                    break;
+                case 'f':
+                    nextc = '\f';
+                    break;
+                case 'r':
+                    nextc = '\r';
+                    break;
+                case 't':
+                    nextc = '\t';
+                    break;
+                case 'u':
+                    char[4] unicodeEscapeSequence = void;
+                    for(int j = 0; j < 4; j++)
+                    {
+                        unescapedString.popFront;
+                        // TODO Check that it fits. It must be value between '0'-'9' and 'a/A''f/F'
+                        unicodeEscapeSequence[i] = cast(char)unescapedString.front;
+                    }
+                    import std.exception: assumeUnique;
+                    // Parse don't use auto-ref
+                    auto lval = unicodeEscapeSequence[].assumeUnique;
+                    nextc = parse!ushort(lval, 16);
+                    break;
+
+                case '\'':
+                    static if(JSON5)
+                    {
+                        // single quote
+                        nextc = '\'';
+                        break;
+                    }
+                case 'v':
+                    static if(JSON5)
+                    {
+                        // vertical tab;
+                        nextc = '\v';
+                        break;
+                    }
+                case '0':
+                    static if(JSON5)
+                    {
+                        // null character
+                        nextc = '\0';
+                        break;
+                    }
+                default:
+                    // unknown escape
+                    throw new JSONIopipeException("Unknown escape, enabling JSON5 might help");
+            }
+            c = nextc;
+        }
+        auto n = encode(buf, c);
+        next = buf[0..n];
+        unescapedString.popFront;
+    }
 }
 
 private template SerializableMembers(T)
