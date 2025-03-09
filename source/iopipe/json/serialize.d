@@ -28,6 +28,7 @@ import std.range.primitives;
 import std.traits;
 import std.typecons : Nullable;
 import std.conv;
+import std.ascii: ControlChar;
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -1080,14 +1081,51 @@ unittest
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
 }
 
+struct JsonEscapeMapping {
+    char chr;
+    string escapeSequence;
+}
+private enum JsonEscapeMapping[7] JSON_ESCAPES = [
+    {'\"', `\"`},
+    {'\\', `\\`},
+    {ControlChar.bs, `\b`},
+    {ControlChar.lf, `\n`},
+    {ControlChar.cr, `\r`},
+    {ControlChar.tab, `\t`},
+    {ControlChar.ff, `\f`},
+];
+
+private void escapeCharacter(DG, Char)(DG w, Char c){
+    import std.uni: isControl;
+    import std.format: formattedWrite;
+    if(!(isControl(c) || c == '\"' || c == '\\'))
+    {
+        put(w, c);
+        return;
+    }
+    switch(c)
+    {
+        // To increase human readibility, use the the legible escape sequences if possible
+        static foreach(mapping; JSON_ESCAPES)
+        {
+            case mapping.chr:
+                w(mapping.escapeSequence);
+                return;
+        }
+        default:
+            // Otherwise, unicode character escape \uxxxx
+            w.formattedWrite!`\u%04x`(c);
+            return;
+    }
+}
+
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
 {
-    import std.algorithm.iteration: substitute;
+    import std.algorithm.iteration: map;
+    import std.utf: byCodeUnit;
     w(`"`);
-    put(w, val.substitute!(
-                `"`, `\"`,
-                `\`, `\\`,
-        ));
+    foreach(c; val.byCodeUnit)
+        escapeCharacter(w, c);
     w(`"`);
 }
 
