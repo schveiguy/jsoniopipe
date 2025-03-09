@@ -30,7 +30,6 @@ import std.meta;
 import std.typecons : Nullable;
 import std.conv;
 import std.format;
-import std.sumtype;
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -1068,7 +1067,6 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
 
 unittest
 {
-    import std.stdio;
     auto serialized = serialize(["a" : 1, "b": 2]);
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
     enum X
@@ -1127,6 +1125,7 @@ void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
 {
+    import std.sumtype;
     static if(isInstanceOf!(Nullable, T))
     {
         if(val.isNull)
@@ -1239,6 +1238,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
 // serialize sumtype
 unittest
 {
+    import std.sumtype;
     alias S = SumType!(int, string);
 
     S[2] s = [S(3), S("test")];
