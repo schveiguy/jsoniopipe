@@ -679,8 +679,9 @@ unittest
 
 
 /** Deserialize the given type from the JSON data.
+ * Note that all arrays are also iopipes, so you can pass in a `string` for `c`.
  * Throws:
- * 	JSONIopipeException on parser error.
+ *      JSONIopipeException on parser error.
  */
 T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
@@ -689,7 +690,7 @@ T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afte
     return result;
 }
 
-/// `Chain c` will accept a string too.
+/// ditto
 T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
@@ -697,11 +698,13 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
     return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
 
+/// ditto
 void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
     deserializeImpl(tokenizer, item, relPol);
 }
 
+/// ditto
 void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
