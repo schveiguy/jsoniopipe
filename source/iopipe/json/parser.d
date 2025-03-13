@@ -778,7 +778,8 @@ unittest
     }
 
     testParse!false(q"{"abcdef"}", false);
-    testParse!false(q"{"abcdef}", true);
+    // Use different string here to mollify github syntax highlighting
+    testParse!false(`"abcdef`, true);
     testParse!true(q"{"abcdef"}".dup, false);
     testParse!true(q"{"abcdef\n"}".dup, false, JSONParseHint.InPlace, 7, "abcdef\n");
     testParse!true(q"{"abcdef\ua123\n"}".dup, false, JSONParseHint.InPlace, 10, "abcdef\ua123\n");
@@ -1688,6 +1689,45 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             cast(void)next; // skip this item
         }
     }
+    
+
+    /** Seek until leaving the current object or array. 
+     * When next item will be ObjectStart or ArrayStart, will behave similar to JSONItem.skipItem(), but without consuming the ArrayEnd/ObjectEnd
+     
+     * Params:
+     * 	 depth = How many levels to leave. 1-indexed
+     * Returns:
+     * 	 The last item consumed, so either a closing ArrayEnd or ObjectEnd or EOF
+     */
+    JSONItem leaveNestingLevel(ulong depth=1)
+    { 
+        assert(depth >= 1, "Leaving less than 0 level would make no sense.");
+
+        with(JSONToken) for(auto item = next;;item = next)
+            switch(item.token)
+            {
+                case ArrayStart:
+                case ObjectStart:
+                    depth++;
+                    break;
+                case ArrayEnd:
+                case ObjectEnd:
+                    if(depth == 1)
+                    {
+                        // Do not consume so caller can differentiate between Array and Object
+                        return item;
+                    }
+                    depth--;
+                    break;
+                case EOF:
+                    return item;
+                default:
+                    break;
+            }
+        assert(0, "Impossible");
+    }
+    
+    
 
     /// Consume any spaces and/or comments. Returns the next token after those are skipped.
     JSONToken peekSignificant()
@@ -2186,6 +2226,32 @@ unittest
         assert(parser.cache.length == 0);
         assert(parser.cIdx == 0);
         assert(check(parser.next, ObjectEnd, "}"));
+    }
+}
+
+// leaveNestingLevel
+unittest
+{
+    string jsonData = `{"a" : [1, 2, 3], "b" : {"c" : {"d": 2, "e": 3}}, "f": 3}`;
+    auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
+    bool check(JSONItem item, JSONToken token, string expected)
+    {
+        if(item.token == token && item.data(parser.chain) == expected)
+            return true;
+        import std.stdio;
+        writeln(item);
+        return false;
+    }
+
+    with(JSONToken)
+    {
+        assert(parser.parseTo("b", "c", "d"));
+        assert(check(parser.next, Number, "2"));
+        assert(check(parser.leaveNestingLevel(2), ObjectEnd, "}"));
+        assert(check(parser.next, Comma, ","));
+        assert(check(parser.next, String, "f"));
+        assert(check(parser.leaveNestingLevel, ObjectEnd, "}"));
+        assert(check(parser.leaveNestingLevel, EOF, ""));
     }
 }
 
