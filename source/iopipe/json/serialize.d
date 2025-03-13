@@ -1080,11 +1080,95 @@ unittest
     assert(serialized == `{"a" : 1, "b" : 2}` || serialized == `{"b" : 2, "a" : 1}`);
 }
 
+/** Eponymous template that generates an argument list for std.algorithm.substitute to correctly escape json strings
+ * Result:
+ *      AliasSeq!("<char>", "<escapesequence>", "<char>", "<escapesequence>", ...);
+ */
+private template jsonEscapeSubstitutions()
+{
+    import std.algorithm.iteration;
+    import std.range;
+    import std.ascii: ControlChar;
+
+    // Control characters [0,31 aka 0x1f] + 2 special characters '"' and '\'
+    private enum charactersToEscape = chain(only('\"', '\\'), iota(0x1f + 1));
+
+    private struct JsonEscapeMapping {
+        char chr;
+        string escapeSequence;
+    }
+
+    /* Special characters we have to (in case of '"' and '\') per the spec or want to escape seperately for readability
+    * Everything else gets converted to the "\uxxxx" unicode escape
+    */
+    private enum JsonEscapeMapping[7] JSON_ESCAPES = [
+        {'\"', `\"`},
+        {'\\', `\\`},
+        {ControlChar.bs, `\b`},
+        {ControlChar.lf, `\n`},
+        {ControlChar.cr, `\r`},
+        {ControlChar.tab, `\t`},
+        {ControlChar.ff, `\f`},
+    ];
+
+    private JsonEscapeMapping escapeSingleChar(int c)
+    {
+        import std.format;
+        switch(c)
+        {
+            static foreach(e; JSON_ESCAPES)
+            {
+                case e.chr:
+                    return e;
+            }
+            default:
+                return JsonEscapeMapping(cast(char)c, format!`\u%04x`(c));
+        }
+    }
+
+    // Convert struct to AliasSeq with correct types so it can be used as parameters of a function
+    private template UnpackStruct(JsonEscapeMapping jem)
+    {
+        import std.conv: to;
+        // Must convert char to string for use with substitute
+        enum string staticCast(char c) = c.to!string;
+        enum string staticCast(string s) = s;
+        alias UnpackStruct = staticMap!(staticCast, jem.tupleof);
+    }
+
+    import std.meta;
+    private alias jsonEscapeSubstitutions = staticMap!(UnpackStruct, aliasSeqOf!(charactersToEscape.map!escapeSingleChar));
+}
+
+/// Instantiate the template without arguments so it's not necessary at the callsite anymore
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
 {
+    import std.algorithm.iteration: substitute;
     w(`"`);
-    put(w, val);
+    put(w, val.substitute!(jsonEscapeSubstitutions!()));
     w(`"`);
+}
+
+// Escape special characters
+unittest
+{
+    string raw = `\ and " must be escaped!`;
+    assert(raw.serialize == `"\\ and \" must be escaped!"`);
+}
+
+// Special characters must survive roundtrip.
+unittest
+{
+    string raw = `\ and " must be escaped!`;
+    assert(raw.serialize.deserialize!string == raw);
+}
+
+// Some characters get escaped to unicode escape sequences and some don't, depending on whether the spec allowed special escape sequences for them
+unittest
+{
+    string raw = "\0\a\u001f\t";
+    assert(raw.serialize == `"\u0000\u0007\u001f\t"`);
+    assert(raw.serialize.deserialize!string == raw);
 }
 
 void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
