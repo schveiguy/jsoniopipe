@@ -460,9 +460,11 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
     alias members = SerializableMembers!T;
     import std.meta;
     import std.bitmanip;
+    import std.math.rounding: ceil;
     alias ignoredMembers = AllIgnoredMembers!T;
 
-    bool[members.length/8 + 1] bitBuffer;
+    enum numBytes = cast(ulong)ceil((cast(float)members.length)/8f);
+    bool[numBytes] bitBuffer;
     BitArray visited = BitArray(bitBuffer[]);
     visited.length = members.length;
 
