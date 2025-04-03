@@ -22,7 +22,8 @@ enum JSONType
     NumberSSO,      // Small string optimization for numbers
 }
 
-struct JSONValue
+// Making JSONValue a template struct with a default parameter of string
+struct JSONValue(StringType = string)
 {
     // Tagged union
     JSONType type;
@@ -36,7 +37,7 @@ struct JSONValue
         struct {
             union {
                 char[SSOSize] sso;
-                string allocatedString;
+                StringType allocatedString;
             }
             // For SSO types, first byte can indicate length used
             ubyte ssoLength;
@@ -44,12 +45,12 @@ struct JSONValue
         
         // Original value types
         JSONValue[] array;
-        JSONValue[string] object;
+        JSONValue[StringType] object;
         bool boolean;
     }
     
     // Get the string representation of the value
-    string stringForm() const
+    StringType stringForm() const
     {
         with(JSONType) final switch(type)
         {
@@ -57,7 +58,8 @@ struct JSONValue
                 return allocatedString;
             case StringSSO:
             case NumberSSO:
-                return sso[0..ssoLength];
+                // Fix: Explicitly convert the slice to a string using .idup
+                return sso[0..ssoLength].idup;
             case Integer:
             case Floating:
                 return allocatedString;
@@ -69,12 +71,42 @@ struct JSONValue
         }
     }
     
+    // Add compatibility properties for serialize.d
+    @property StringType str() const
+    {
+        with(JSONType) 
+        if (type == String || type == StringSSO)
+            return stringForm();
+        else
+            throw new JSONIopipeException("JSON value is not a string");
+    }
+    
+    @property long integer() const
+    {
+        import std.conv : to;
+        with(JSONType) 
+        if (type == Integer || type == NumberSSO)
+            return stringForm().to!long;
+        else
+            throw new JSONIopipeException("JSON value is not an integer");
+    }
+    
+    @property double floating() const
+    {
+        import std.conv : to;
+        with(JSONType)
+        if (type == Floating || type == NumberSSO)
+            return stringForm().to!double;
+        else
+            throw new JSONIopipeException("JSON value is not a floating-point number");
+    }
+    
     // Convert the value to type T
     T get(T)() const
     {
         import std.conv : to;
         
-        static if (is(T == string))
+        static if (is(T == StringType))
         {
             return stringForm();
         }
@@ -102,7 +134,7 @@ struct JSONValue
     }
     
     // Create a JSONValue from a string, using SSO when possible
-    static JSONValue fromString(string value, bool isNumber = false)
+    static JSONValue fromString(StringType value, bool isNumber = false)
     {
         JSONValue result;
         
@@ -124,7 +156,7 @@ struct JSONValue
     }
     
     // Convenience to create numeric JSONValue
-    static JSONValue number(string value, bool isInteger = false)
+    static JSONValue number(StringType value, bool isInteger = false)
     {
         auto result = fromString(value, true);
         // Set the hint type if it's allocated
@@ -134,44 +166,44 @@ struct JSONValue
     }
 }
 
-private JSONValue buildValue(Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
+private JSONValue!StringType buildValue(StringType = string, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
 {
     import std.conv;
 
     with(JSONToken) switch (item.token)
     {
     case ObjectStart:
-        return parser.buildObject(relPol);
+        return parser.buildObject!StringType(relPol);
     case ArrayStart:
-        return parser.buildArray(relPol);
+        return parser.buildArray!StringType(relPol);
     case String:
         {
             // Extract string and use SSO when possible
-            auto strData = extractString!string(item, parser.chain);
-            return JSONValue.fromString(strData);
+            auto strData = extractString!StringType(item, parser.chain);
+            return JSONValue!StringType.fromString(strData);
         }
     case Number:
         {
             // Store the number as string
-            auto numStr = item.data(parser.chain).to!string;
-            return JSONValue.number(numStr, item.hint == JSONParseHint.Int);
+            auto numStr = item.data(parser.chain).to!StringType;
+            return JSONValue!StringType.number(numStr, item.hint == JSONParseHint.Int);
         }
     case Null:
         {
-            JSONValue result;
+            JSONValue!StringType result;
             result.type = JSONType.Null;
             return result;
         }
     case True:
         {
-            JSONValue result;
+            JSONValue!StringType result;
             result.type = JSONType.Bool;
             result.boolean = true;
             return result;
         }
     case False:
         {
-            JSONValue result;
+            JSONValue!StringType result;
             result.type = JSONType.Bool;
             result.boolean = false;
             return result;
@@ -181,11 +213,14 @@ private JSONValue buildValue(Tokenizer)(ref Tokenizer parser, JSONItem item, Rel
     }
 }
 
-private JSONValue buildObject(Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
+private JSONValue!StringType buildObject(StringType = string, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
 {
     auto item = parser.next();
-    JSONValue obj;
+    JSONValue!StringType obj;
     obj.type = JSONType.Obj;
+    
+    // Add this line back:
+    obj.object = null;
     while(item.token != JSONToken.ObjectEnd)
     {
         if(item.token == JSONToken.Comma)
@@ -195,14 +230,14 @@ private JSONValue buildObject(Tokenizer)(ref Tokenizer parser, ReleasePolicy rel
         }
         // the item must be a string
         assert(item.token == JSONToken.String);
-        auto nameVal = parser.buildValue(item, relPol);
-        string name = nameVal.stringForm().idup;
+        auto nameVal = parser.buildValue!StringType(item, relPol);
+        StringType name = nameVal.stringForm().idup;
         
         item = parser.next();
         // should always be colon
         assert(item.token == JSONToken.Colon);
         item = parser.next();
-        obj.object[name] = parser.buildValue(item, relPol);
+        obj.object[name] = parser.buildValue!StringType(item, relPol);
         // release any parsed data.
         if(relPol == ReleasePolicy.afterMembers)
             parser.releaseParsed();
@@ -211,16 +246,24 @@ private JSONValue buildObject(Tokenizer)(ref Tokenizer parser, ReleasePolicy rel
     return obj;
 }
 
-private JSONValue buildArray(Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
+private JSONValue!StringType buildArray(StringType = string, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
 {
     auto item = parser.next();
-    JSONValue arr;
+    JSONValue!StringType arr;
     arr.type = JSONType.Array;
+    
+    // Initialize the array explicitly to avoid null array issues
+    arr.array = new JSONValue!StringType[0];
+    
     while(item.token != JSONToken.ArrayEnd)
     {
-        arr.array ~= parser.buildValue(item, relPol);
+        // Create a new value and then append it
+        auto newValue = parser.buildValue!StringType(item, relPol);
+        arr.array ~= newValue;
+        
         if(relPol == ReleasePolicy.afterMembers)
             parser.releaseParsed();
+            
         item = parser.next();
         if(item.token == JSONToken.Comma)
             item = parser.next();
@@ -240,7 +283,7 @@ auto parseJSON(Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = Releas
 auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
     auto item = tokenizer.next();
-    auto result = tokenizer.buildValue(item, relPol);
+    auto result = tokenizer.buildValue!SType(item, relPol);
     if(relPol == ReleasePolicy.afterMembers)
         tokenizer.releaseParsed();
     return result;
@@ -336,4 +379,8 @@ unittest
     auto numberTest = parseJSON(q"{{"num": 42, "str": "hello"}}");
     assert(numberTest.object["num"].get!int() == 42);
     assert(numberTest.object["str"].get!string() == "hello");
+    
+    // Test the compatibility properties
+    assert(numberTest.object["num"].integer == 42);
+    assert(numberTest.object["str"].str == "hello");
 }
