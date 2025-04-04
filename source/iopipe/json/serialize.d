@@ -1354,6 +1354,111 @@ void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
 {
     w(val ? "true" : "false");
 }
+void serializeImpl(T : JSONValue!S, Char, S)(scope void delegate(const(Char)[]) w, T val)
+{
+    with(JSONType) final switch(val.type)
+    {
+        case Obj:
+            serializeObject(w, val.object);
+            break;
+        case Array:
+            serializeArray(w, val.array);
+            break;
+        case Integer:
+        case NumberSSO:
+            // For integers stored as strings, write the string form directly
+            w(val.stringForm());
+            break;
+        case Floating:
+            // For floating point numbers stored as strings, write the string form directly
+            w(val.stringForm());
+            break;
+        case Null:
+            w("null");
+            break;
+        case Bool:
+            w(val.boolean ? "true" : "false");
+            break;
+        case String:
+        case StringSSO:
+            // Serialize as a JSON string with quotes and escaping
+            serializeString(w, val.stringForm());
+            break;
+    }
+}
+
+// Helper function to serialize arrays of JSONValue
+void serializeArray(T : JSONValue!S, Char, S)(scope void delegate(const(Char)[]) w, T[] arr)
+{
+    w("[");
+    bool first = true;
+    foreach(ref v; arr)
+    {
+        if(first)
+            first = false;
+        else
+            w(",");
+        serializeImpl(w, v);
+    }
+    w("]");
+}
+
+// Helper function to serialize objects (key-value pairs) of JSONValue
+void serializeObject(T : JSONValue!S, Char, S)(scope void delegate(const(Char)[]) w, T[S] obj)
+{
+    w("{");
+    bool first = true;
+    foreach(key, ref val; obj)
+    {
+        if(first)
+            first = false;
+        else
+            w(",");
+        serializeString(w, key);
+        w(":");
+        serializeImpl(w, val);
+    }
+    w("}");
+}
+
+// Helper function for proper string serialization with escaping
+void serializeString(Char, S)(scope void delegate(const(Char)[]) w, S str)
+{
+    import std.algorithm : map;
+    import std.range : join;
+    import std.conv : to;
+
+    w("\"");
+    // Handle string escaping
+    foreach(c; str)
+    {
+        switch(c)
+        {
+            case '\"': w("\\\""); break;
+            case '\\': w("\\\\"); break;
+            case '/':  w("\\/"); break;
+            case '\b': w("\\b"); break;
+            case '\f': w("\\f"); break;
+            case '\n': w("\\n"); break;
+            case '\r': w("\\r"); break;
+            case '\t': w("\\t"); break;
+            default:
+                // Handle control characters and others
+                if(c < 32)
+                {
+                    import std.format : format;
+                    w("\\u" ~ format("%04x", c));
+                }
+                else
+                {
+                    char[1] cc = [cast(char)c];
+                    w(cc[]);
+                }
+                break;
+        }
+    }
+    w("\"");
+}
 
 // serialize an item to an iopipe.
 // The behavior flag specifies whether the json serializer should release data
