@@ -49,19 +49,24 @@ struct JSONValue(StringType = string)
         bool boolean;
     }
     
-    // Get the string representation of the value
+// Get the string representation of the value
     StringType stringForm() const
     {
+        // You might import 'to' locally if needed, but the top-level import should suffice
+        // import std.conv : to;
+
         with(JSONType) final switch(type)
         {
             case String:
                 return allocatedString;
             case StringSSO:
             case NumberSSO:
-                // Fix: Explicitly convert the slice to a string using .idup
-                return sso[0..ssoLength].idup;
+                // Use std.conv.to for converting the char[] slice to StringType
+                import std.conv : to; // Add import here just to be safe/clear
+                return sso[0..ssoLength].to!StringType; // <-- Changed line
             case Integer:
             case Floating:
+                // These types now store their value in allocatedString
                 return allocatedString;
             case Obj:
             case Array:
@@ -69,6 +74,9 @@ struct JSONValue(StringType = string)
             case Bool:
                 throw new JSONIopipeException("Cannot get string form of non-string/non-number type");
         }
+        // Optional: Add a default or final return for compilers that warn about
+        // not all control paths returning a value, although final switch should cover it.
+        // assert(0, "Should not reach here"); return StringType.init;
     }
     
     // Add compatibility properties for serialize.d
