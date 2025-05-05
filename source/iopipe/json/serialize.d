@@ -465,7 +465,7 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
 
     enum numBytes = cast(ulong)ceil((cast(float)members.length)/8f);
     bool[numBytes] bitBuffer;
-    BitArray visited = BitArray(bitBuffer[]);
+    BitArray visited = BitArray(bitBuffer[], numBytes * 8);
     visited.length = members.length;
 
     // any members that are optional, mark as already visited
