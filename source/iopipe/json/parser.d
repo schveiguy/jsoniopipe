@@ -68,6 +68,9 @@ struct ParseConfig
      * the comment delimeters.
      */
     bool includeComments;
+
+    bool propertyNameCaseInsensitive;
+
 }
 
 /**
