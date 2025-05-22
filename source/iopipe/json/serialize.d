@@ -455,6 +455,17 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         item = T.fromJSON(tokenizer, relPol);
 }
 
+private template GetJsonName(alias item, string m) {
+    static if (hasUDA!(__traits(getMember, item, m), alternateName))
+    {
+        enum GetJsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
+    }
+    else
+    {
+        enum GetJsonName = m;
+    }
+}
+
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
@@ -525,12 +536,7 @@ OBJ_MEMBER_SWITCH:
             static foreach(i, m; members)
                 static if(!hasUDA!(__traits(getMember, item, m), extras))
                 {{
-                    static if(hasUDA!(__traits(getMember, item, m), alternateName))
-                    {
-                        enum jsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
-                    }
-                    else
-                        enum jsonName = m;
+                    enum jsonName = GetJsonName!(item, m);
                 case jsonName:
                     tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
                     visited[i] = true;
@@ -552,6 +558,30 @@ OBJ_MEMBER_SWITCH:
             }
 
         default:
+            static if (tokenizer.config.propertyNameCaseInsensitive)
+            {
+                string currentName = name();
+                bool foundMatch = false;
+                
+                // Try all members with case-insensitive comparison
+                static foreach(i, m; members)
+                    static if(!hasUDA!(__traits(getMember, item, m), extras))
+                    {{
+                        enum jsonName = GetJsonName!(item, m);
+
+                        import std.string : icmp; // Case-insensitive comparison
+                        // currentName can only be determined at runtime, so we need to
+                        if (!foundMatch && icmp(currentName, jsonName) == 0)
+                        {  
+                            tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                            visited[i] = true;
+                            foundMatch = true;
+                        }
+                    }}
+                    
+                if (foundMatch)
+                    break OBJ_MEMBER_SWITCH;
+            }
             static if(ignoreExtras)
             {
                 tokenizer.skipItem();
@@ -592,6 +622,42 @@ OBJ_MEMBER_SWITCH:
             throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
         }
     }
+}
+
+unittest {
+    static struct S {
+        string userName;
+        int age;
+    }
+
+    // Case-insensitive deserialization - CORRECT VERSION
+    auto jsonStr1 = `{"USERNAME": "Alice", "AGE": 30}`;
+    
+    auto tokenizer1 = jsonStr1.jsonTokenizer!(ParseConfig(
+        replaceEscapes: false,
+        JSON5: false,
+        includeSpaces: false,
+        includeComments: false,
+        propertyNameCaseInsensitive: true
+    ));
+    auto s = tokenizer1.deserialize!S;
+
+    assert(s.userName == "Alice");
+    assert(s.age == 30);
+
+    // Case-insensitive deserialization - INCORRECT VERSION
+    auto jsonStr2 = `{"NAME": "Alice", "AGE": 30}`;
+    auto tokenizer2 = jsonStr2.jsonTokenizer!(ParseConfig(
+        replaceEscapes: false,
+        JSON5: false,
+        includeSpaces: false,
+        includeComments: false,
+        propertyNameCaseInsensitive: true
+    ));
+
+    import std.exception : assertThrown;
+    assertThrown(tokenizer2.deserialize!S);
+
 }
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
