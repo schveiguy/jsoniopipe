@@ -33,13 +33,13 @@ import std.format;
 
 struct DefaultDeserializationPolicy(T) {
     // Called at beginning of struct/class deserialization
-    void onBegin(JT)(ref JT tokenizer) {
+    static void onBegin(JT)(ref JT tokenizer) {
         tokenizer.nextSignificant
             .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
     }
     
     // Handles a field (returns true if handled)
-    bool onField(JT)(ref JT tokenizer, ref T item, string key, ReleasePolicy relPol) {
+    static bool onField(JT)(ref JT tokenizer, ref T item, string key, ReleasePolicy relPol) {
         alias members = SerializableMembers!T;
         
         // Check each member to see if it matches
@@ -65,12 +65,12 @@ struct DefaultDeserializationPolicy(T) {
     }
     
     // Called for unknown fields
-    void onUnknownField(JT)(ref JT tokenizer, string key) {
+    static void onUnknownField(JT)(ref JT tokenizer, string key) {
         throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
     }
     
     // Called at end of deserialization
-    void onEnd(JT)(ref JT tokenizer) {
+    static void onEnd(JT)(ref JT tokenizer) {
         tokenizer.nextSignificant
             .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
     }
@@ -1022,11 +1022,10 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
     ReleasePolicy relPol
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
-    // Create policy instance
-    Policy policy;
+    
     
     // Begin deserialization
-    policy.onBegin(tokenizer);
+    Policy.onBegin(tokenizer);
     
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
@@ -1061,10 +1060,10 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
         
         // Let the policy handle this field
-        bool handled = policy.onField(tokenizer, item, key, relPol);
+        bool handled = Policy.onField(tokenizer, item, key, relPol);
         
         if(!handled) {
-            policy.onUnknownField(tokenizer, key);
+            Policy.onUnknownField(tokenizer, key);
         }
         
         if(relPol == ReleasePolicy.afterMembers)
@@ -1080,7 +1079,7 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
     }
     
     // End deserialization
-    policy.onEnd(tokenizer);
+    Policy.onEnd(tokenizer);
 }
 
 
@@ -1122,11 +1121,6 @@ void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
     deserializeWithPolicy!(T, Policy)(tokenizer, item, ReleasePolicy.afterMembers);
 }
 
-unittest {
-    import std.traits;
-    import iopipe.traits;
-    pragma(msg, "Is string an iopipe? " ~ isIopipe!string.stringof);
-}
 
 
 unittest
@@ -1143,21 +1137,6 @@ unittest
     assert(person.age == 30);
 }
 
-
-struct SimplePolicy(T) {}
-// 4. Add the policy parameter
-// Change the order - T first, then Policy
-T policyDeserialize(T, Policy = SimplePolicy!T)(string s) {
-    T result;
-    // Just return default value
-    return result;
-}
-
-// 5. Test with policy
-unittest {
-    struct Person { string name; int age; }
-    auto p = policyDeserialize!Person("test");  // Uses default policy    // If this works, the issue is not with basic template parameters
-}
 
 void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
 {
