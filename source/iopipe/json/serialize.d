@@ -32,15 +32,32 @@ import std.conv;
 import std.format;
 
 struct DefaultDeserializationPolicy(T) {
+    alias members = SerializableMembers!T;
+    
     // Called at beginning of struct/class deserialization
-    static void onBegin(JT)(ref JT tokenizer) {
+    static bool[members.length] onBegin(JT)(ref JT tokenizer) {
+        bool[members.length] visited;
+
+        // Pre-mark optional fields as visited
+        alias members = SerializableMembers!T;
+        static foreach(idx, m; members) {
+            static if(hasUDA!(__traits(getMember, T, m), optional))
+                visited[idx] = true;
+        }
+        
         tokenizer.nextSignificant
             .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+        return visited;
     }
     
     // Handles a field (returns true if handled)
-    static bool onField(JT)(ref JT tokenizer, ref T item, string key, ReleasePolicy relPol) {
-        alias members = SerializableMembers!T;
+    static bool onField(JT)(
+        ref JT tokenizer, 
+        ref T item, 
+        string key, 
+        ReleasePolicy relPol, 
+        ref bool[members.length] visited
+    ) {
         
         // Check each member to see if it matches
         static foreach(i, memberName; members) {
@@ -56,6 +73,7 @@ struct DefaultDeserializationPolicy(T) {
             if(key == jsonName) {
                 // Deserialize this member by original codes towards different types               
                 deserializeImpl(tokenizer, __traits(getMember, item, memberName), relPol);
+                visited[i] = true; // Mark as visited
                 return true;
             }
           }
@@ -70,9 +88,21 @@ struct DefaultDeserializationPolicy(T) {
     }
     
     // Called at end of deserialization
-    static void onEnd(JT)(ref JT tokenizer) {
+    static void onEnd(JT)(ref JT tokenizer, ref bool[members.length] visited) {
         tokenizer.nextSignificant
             .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
+        // ensure all members visited
+        static if(members.length)
+        {
+            import std.algorithm : canFind, map, filter;
+            if(visited[].canFind(false))
+            {
+                // this is a bit ugly, but gives a nicer message.
+                static immutable marr = [members];
+                import std.range : enumerate;
+                throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+            }
+        }
     }
 }
 
@@ -1025,7 +1055,7 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
     
     
     // Begin deserialization
-    Policy.onBegin(tokenizer);
+    auto visited = Policy.onBegin(tokenizer);
     
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
@@ -1060,7 +1090,7 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
         
         // Let the policy handle this field
-        bool handled = Policy.onField(tokenizer, item, key, relPol);
+        bool handled = Policy.onField(tokenizer, item, key, relPol, visited);
         
         if(!handled) {
             Policy.onUnknownField(tokenizer, key);
@@ -1079,7 +1109,7 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
     }
     
     // End deserialization
-    Policy.onEnd(tokenizer);
+    Policy.onEnd(tokenizer, visited);
 }
 
 
