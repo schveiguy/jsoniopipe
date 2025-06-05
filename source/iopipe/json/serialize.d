@@ -31,15 +31,16 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
-struct DefaultDeserializationPolicy(T) {
-    alias members = SerializableMembers!T;
-    
+struct DefaultDeserializationPolicy {
+    ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
+        
     // Called at beginning of struct/class deserialization
-    static bool[members.length] onBegin(JT)(ref JT tokenizer) {
-        bool[members.length] visited;
+    bool[SerializableMembers!T.length] onBegin(JT, T)(ref JT tokenizer) {
 
         // Pre-mark optional fields as visited
         alias members = SerializableMembers!T;
+        bool[members.length] visited;
+
         static foreach(idx, m; members) {
             static if(hasUDA!(__traits(getMember, T, m), optional))
                 visited[idx] = true;
@@ -51,14 +52,13 @@ struct DefaultDeserializationPolicy(T) {
     }
     
     // Handles a field (returns true if handled)
-    static bool onField(JT)(
+    bool onField(JT, T)(
         ref JT tokenizer, 
         ref T item, 
         string key, 
-        ReleasePolicy relPol, 
-        ref bool[members.length] visited
+        ref bool[SerializableMembers!T.length] visited
     ) {
-        
+        alias members = SerializableMembers!T;
         // Check each member to see if it matches
         static foreach(i, memberName; members) {
           { // Add a block scope to contain each declaration, avoiding duplicate jsonName
@@ -72,7 +72,7 @@ struct DefaultDeserializationPolicy(T) {
             
             if(key == jsonName) {
                 // Deserialize this member by original codes towards different types               
-                deserializeImpl(tokenizer, __traits(getMember, item, memberName), relPol);
+                deserializeImpl(tokenizer, __traits(getMember, item, memberName), this.relPol);
                 visited[i] = true; // Mark as visited
                 return true;
             }
@@ -83,14 +83,20 @@ struct DefaultDeserializationPolicy(T) {
     }
     
     // Called for unknown fields
-    static void onUnknownField(JT)(ref JT tokenizer, string key) {
+    void onUnknownField(JT, T)(ref JT tokenizer, string key) {
         throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
     }
     
     // Called at end of deserialization
-    static void onEnd(JT)(ref JT tokenizer, ref bool[members.length] visited) {
+    void onEnd(JT, T)(ref JT tokenizer, ref bool[SerializableMembers!T.length] visited) {
         tokenizer.nextSignificant
             .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
+        
+        if(this.relPol == ReleasePolicy.afterMembers)
+            tokenizer.releaseParsed();
+        
+        alias members = SerializableMembers!T;
+
         // ensure all members visited
         static if(members.length)
         {
@@ -1046,16 +1052,16 @@ unittest
     assert(cArr.length == 3);
 }
 
-private void deserializeImplWithPolicy(T, Policy, JT)(
+private void deserializeImplWithPolicy(T, JT, Policy)(
     ref JT tokenizer,
     ref T item,
-    ReleasePolicy relPol
+    ref Policy policy
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     
     
     // Begin deserialization
-    auto visited = Policy.onBegin(tokenizer);
+    auto visited = policy.onBegin!(JT, T)(tokenizer);
     
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
@@ -1090,13 +1096,13 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
         
         // Let the policy handle this field
-        bool handled = Policy.onField(tokenizer, item, key, relPol, visited);
+        bool handled = policy.onField!(JT, T)(tokenizer, item, key, visited);
         
         if(!handled) {
-            Policy.onUnknownField(tokenizer, key);
+            policy.onUnknownField!(JT, T)(tokenizer, key);
         }
         
-        if(relPol == ReleasePolicy.afterMembers)
+        if(policy.relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
         
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
@@ -1109,36 +1115,36 @@ private void deserializeImplWithPolicy(T, Policy, JT)(
     }
     
     // End deserialization
-    Policy.onEnd(tokenizer, visited);
+    policy.onEnd!(JT, T)(tokenizer, visited);
 }
 
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
+T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
     ref JT tokenizer, 
-    ReleasePolicy relPol = ReleasePolicy.afterMembers
+    Policy policy = Policy()
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
-    deserializeImplWithPolicy!(T, Policy)(tokenizer, result, relPol);
+    deserializeImplWithPolicy!(T, JT, Policy)(tokenizer, result, policy);
     return result;
 }
 
-void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
+void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
     ref JT tokenizer,
     ref T item,
-    ReleasePolicy relPol = ReleasePolicy.afterMembers
+    Policy policy = Policy()
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    deserializeImplWithPolicy!(T, Policy)(tokenizer, item, relPol);
+    deserializeImplWithPolicy!(T, JT, Policy)(tokenizer, item, policy);
 }
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
+T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
     auto ref Chain c
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy!(T, Policy)(tokenizer, ReleasePolicy.afterMembers);
+    return deserializeWithPolicy!(T, Policy)(tokenizer);
 }
 
 void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
@@ -1148,7 +1154,7 @@ void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    deserializeWithPolicy!(T, Policy)(tokenizer, item, ReleasePolicy.afterMembers);
+    deserializeWithPolicy!(T, Policy)(tokenizer, item);
 }
 
 
