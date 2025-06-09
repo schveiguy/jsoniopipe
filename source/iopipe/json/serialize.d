@@ -60,26 +60,34 @@ struct DefaultDeserializationPolicy {
     ) {
         alias members = SerializableMembers!T;
         // Check each member to see if it matches
-        static foreach(i, memberName; members) {
-          { // Add a block scope to contain each declaration, avoiding duplicate jsonName
-            // declarations in the foreach loop.
-            static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+        switch(key)
+        {
+            static foreach(i, memberName; members) {
+                { // Add a block scope to contain each declaration, avoiding duplicate jsonName
+                  // declarations in the foreach loop.
+                  static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                      enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                  }
+                  else {
+                      enum jsonName = memberName;
+                  }
+                  
+                  case jsonName:
+                      // Deserialize this member by original codes towards different types               
+                      deserializeImpl(tokenizer, __traits(getMember, item, memberName), this.relPol);
+                      visited[i] = true; // Mark as visited
+                      
+                      if(this.relPol == ReleasePolicy.afterMembers)
+                        tokenizer.releaseParsed();
+                      
+                      return true;
+                  
+                }
             }
-            else {
-                enum jsonName = memberName;
-            }
-            
-            if(key == jsonName) {
-                // Deserialize this member by original codes towards different types               
-                deserializeImpl(tokenizer, __traits(getMember, item, memberName), this.relPol);
-                visited[i] = true; // Mark as visited
-                return true;
-            }
-          }
+
+            default:
+            return false; // Not handled
         }
-        
-        return false; // Not handled
     }
     
     // Called for unknown fields
@@ -1101,9 +1109,6 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
         if(!handled) {
             policy.onUnknownField!(JT, T)(tokenizer, key);
         }
-        
-        if(policy.relPol == ReleasePolicy.afterMembers)
-            tokenizer.releaseParsed();
         
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
         {
