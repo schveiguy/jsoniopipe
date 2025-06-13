@@ -69,8 +69,7 @@ struct DefaultDeserializationPolicy(T) {
                   }
                   
                   case jsonName:
-                      // Deserialize this member by original codes towards different types               
-                      // deserializeImpl(tokenizer, __traits(getMember, item, memberName), this.relPol);
+                      // Choose appropriate deserialization method based on member type               
                       static if(__traits(compiles, deserializeImplWithPolicy(tokenizer, __traits(getMember, item, memberName), this)))
                           deserializeImplWithPolicy(tokenizer, __traits(getMember, item, memberName), this);
                       else
