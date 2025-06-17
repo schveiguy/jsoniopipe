@@ -31,27 +31,36 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
-struct DefaultDeserializationPolicy(T) {
+struct DefaultDeserializationPolicy {
+    int maxDepthAvailable = 64; // default depth
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
-    bool[SerializableMembers!T.length] visited; // visited members
-        
+
     // Called at beginning of struct/class deserialization
-    void onObjectBegin(JT)(ref JT tokenizer) {
+    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer) {
+        
+        if (maxDepthAvailable <= 0) {
+            throw new JSONIopipeException("Maximum deserialization depth exceeded");  
+        }
+        maxDepthAvailable--;
 
         // Pre-mark optional fields as visited
         alias members = SerializableMembers!T;
+        bool[members.length] visited;
 
         static foreach(idx, m; members) {
             static if(hasUDA!(__traits(getMember, T, m), optional))
                 visited[idx] = true;
         }
+
+        return visited;
     }
     
     // Handles a field (returns true if handled)
-    void onField(JT)(
+    void onField(JT, T)(
         ref JT tokenizer, 
         ref T item, 
-        string key, 
+        string key,
+        ref bool[SerializableMembers!T.length] visited 
     ) {
         alias members = SerializableMembers!T;
         alias ignoredMembers = AllIgnoredMembers!T;
@@ -106,7 +115,7 @@ struct DefaultDeserializationPolicy(T) {
 
     
     // Called at end of deserialization
-    void onObjectEnd(JT)(ref JT tokenizer) {
+    void onObjectEnd(JT, T)(ref JT tokenizer, ref bool[SerializableMembers!T.length] visited) {
         if(this.relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
         
@@ -1076,7 +1085,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     
     
     // Begin deserialization
-    policy.onObjectBegin!(JT)(tokenizer);
+    auto visited = policy.onObjectBegin!(JT, T)(tokenizer);
 
             
     tokenizer.nextSignificant
@@ -1115,7 +1124,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
         
         // Let the policy handle this field
-        policy.onField!(JT)(tokenizer, item, key);
+        policy.onField!(JT, T)(tokenizer, item, key, visited);
         
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
         {
@@ -1127,7 +1136,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     }
     
     // End deserialization
-    policy.onObjectEnd!(JT)(tokenizer);
+    policy.onObjectEnd!(JT, T)(tokenizer, visited);
 
     tokenizer.nextSignificant
         .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
@@ -1135,7 +1144,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
 }
 
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
+T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
     ref JT tokenizer, 
     Policy policy = Policy()
 ) if (isInstanceOf!(JSONTokenizer, JT))
@@ -1145,7 +1154,7 @@ T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
     return result;
 }
 
-void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
+void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
     ref JT tokenizer,
     ref T item,
     Policy policy = Policy()
@@ -1154,7 +1163,7 @@ void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, JT)(
     deserializeImplWithPolicy!(T, JT, Policy)(tokenizer, item, policy);
 }
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
+T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
     auto ref Chain c
 ) if (isIopipe!Chain)
 {
@@ -1163,7 +1172,17 @@ T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
     return deserializeWithPolicy!(T, Policy)(tokenizer);
 }
 
-void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy!T, Chain)(
+T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
+    auto ref Chain c,
+    Policy policy
+) if (isIopipe!Chain)
+{
+    enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
+    auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
+    return deserializeWithPolicy!(T, Policy)(tokenizer, policy);
+}
+
+void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
     auto ref Chain c,
     ref T item
 ) if (isIopipe!Chain)
@@ -1193,6 +1212,9 @@ unittest
 unittest
 {
     // Test deserializing a struct with nested objects
+
+    import std.exception;
+
     struct Pet {
         string name;
         int age;
@@ -1213,13 +1235,20 @@ unittest
             "age": 5
         }
     }`; 
-    auto person = deserializeWithPolicy!(Person)(jsonStr);
+    auto policy1 = DefaultDeserializationPolicy(1); // Set max depth to 1
+    assertThrown!JSONIopipeException(
+        deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy1)
+    );
+
+    auto policy2 = DefaultDeserializationPolicy(2); // Set max depth to 2
+    auto person = deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy2);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
     assert(person.pet.name == "Fido");
     assert(person.pet.age == 5);
 }
+
 unittest
 {
     import std.exception;
