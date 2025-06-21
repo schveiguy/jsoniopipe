@@ -1097,12 +1097,12 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     {
         if(jsonItem.token == JSONToken.Comma)
         {
-            jsonItem = tokenizer.nextSignificant();
             static if(tokenizer.config.JSON5)
             {
-                if(jsonItem.token == JSONToken.ObjectEnd)
+                if(tokenizer.peekSignificant() == JSONToken.ObjectEnd)
                     break;
             }
+            jsonItem = tokenizer.nextSignificant();
             continue;
         }
         
@@ -1874,6 +1874,18 @@ unittest
         assert(s2.obj1.d == real.infinity);
         assert(s2.obj1.e == -0x42);
         assert(s2.arr == ["abc", "def"]);
+        
+        // test with policy
+        auto tokenizerWithPolicy = jsonStr.jsonTokenizer!config;
+        auto s2WithPolicy = tokenizerWithPolicy.deserializeWithPolicy!S2;
+        assert(s2WithPolicy.obj1.a.isClose(0.123));
+        assert(s2WithPolicy.obj1.b == "str");
+        assert(isNaN(s2WithPolicy.obj1.c));
+        assert(s2WithPolicy.obj1.d == real.infinity);
+        assert(s2WithPolicy.obj1.e == -0x42);
+        assert(s2WithPolicy.arr == ["abc", "def"]);
+
+
     }}
 } 
 
