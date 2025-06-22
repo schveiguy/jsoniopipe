@@ -296,6 +296,268 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
+/** Since JOutputRange with a pointer already has reference semantics, it can be used as an rvalue without issues. 
+ * lvalue of a wrapper around a delegate or function also makes little sense.
+ */
+private template rvalueAllowed(T)
+{
+    static if(is(T == JOutputRange!(R, U, ElemT), R: U*, U, ElemT))
+        enum rvalueAllowed = true;
+    // For some reason this doesn't match
+    // else static if(is(T == JOutputRange!(Fun), Fun)){
+    else static if(is(typeof(T.R) == return)){
+        enum rvalueAllowed = true;
+    }
+    else
+        enum rvalueAllowed = false;
+}
+
+template JOutputRange(alias Fun)
+{
+    static assert(is(typeof(Fun) ret == return) && is(ret == void));
+    static assert(Parameters!Fun.length == 1);
+    struct JOutputRange
+    {
+        alias R = Fun;
+        alias ElemT = Parameters!R[0];
+        alias r = Fun;
+        // Calling the function directly works better than `std.range.put` in some cases.
+        void put(ElemT e) => Fun(e);
+        //void put(ElemT e) => std.range.put(Fun, e);
+    }
+    /* Instead, we could just alias the Function/ delegate and skip the empty struct like this:
+    * alias JOutputRange = Fun;
+    * but then we would need another deserializeImpl without the argument `ref T item`, and instead moving
+    * that as a template arg and otherwise doing the same thing as the current implementation for JOutputRange.
+    */
+}
+
+/**
+ * Wrapper struct to pass output ranges to deserialize. This is needed because there is no general way to determine 
+ * the element type of an output range, it's often templated. Even the phobos `isOutputRange` requires an element type.
+ */
+struct JOutputRange(R_, ElemT_)
+{
+    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    static assert(!is(R_ == return), "Giving element type for function/delegate is unnecessary. Omit it and the library will infer it.");
+    alias R = R_;
+    alias ElemT = ElemT_;
+    R r;
+    alias this = r;
+}
+
+struct JOutputRange(R_: U*, U, ElemT_)
+{
+    static assert(isOutputRange!(U, ElemT), "*R must be valid output range of ElemT");
+    alias R = R_;
+    alias ElemT = ElemT_;
+    R r;
+    alias this = r;
+
+    this(R r)
+    {
+        this.r = r;
+    }
+
+    // put doesn't compile. opCall is fine for output ranges, but can lead to confusing error messages if the compiler mixes up opCall and the constructor
+    // void put(ElemT e) => std.range.put(*r, e);
+    void opCall(ElemT e) => put(*r, e);
+}
+
+auto refJOutputRange(ElemT, R)(return ref scope R r)
+{
+    static assert(isOutputRange!(R, ElemT), "R must be valid output range of ElemT");
+    return jOutputRange!ElemT(&r);
+}
+
+auto jOutputRange(alias Fun)()
+{
+    // Need this wrapper function since JOutputRange!Fun is an empty struct.
+    // This interferes with UFCS sometimes, as the compiler has to decide whether we are referencing the struct or the (empty) constructor.
+    // Thus we need the parentheses here
+    return JOutputRange!Fun();
+}
+
+
+auto jOutputRange(ElemT, R: U*, U)(return scope R range)
+{
+    static assert(isOutputRange!(U, ElemT), "U must be valid output range of ElemT");
+    return JOutputRange!(R, U, ElemT)(range);
+}
+
+auto jOutputRange(ElemT,R)(R range)
+{
+    static assert(isOutputRange!(R, ElemT), "*R must be valid output range of ElemT");
+    return JOutputRange!(R, ElemT)(range);
+}
+
+
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T outputRange, ReleasePolicy relPol) if (isInstanceOf!(JOutputRange, T) || is(T == return))
+{
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+
+    // check for an empty array (special case)
+    if(tokenizer.peek == JSONToken.ArrayEnd)
+    {
+        // parse it off
+        jsonItem = tokenizer.nextSignificant;
+        // nothing left to do
+        return;
+    }
+    // parse items and commas until we get an array end.
+    while(true)
+    {
+        T.ElemT elem;
+        deserializeImpl(tokenizer, elem, relPol);
+        put(outputRange, elem);
+        if(relPol == ReleasePolicy.afterMembers)
+            tokenizer.releaseParsed();
+        jsonItem = tokenizer.nextSignificant;
+        if(jsonItem.token == JSONToken.ArrayEnd)
+            break;
+        jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
+        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
+        {
+            // was a trailing comma. parse the array end and break
+            tokenizer.next;
+            break;
+        }
+    }
+}
+
+// Output range
+// One usecase: Parse an array with known maximum size on the stack.
+unittest
+{
+    int[50] arr = void;
+    int n = 0;
+    auto insert = (int i){arr[n++] = i;};
+
+    static assert(isOutputRange!(typeof(insert), int), "test");
+
+    auto json = `[0,1,2,3,4,5,6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    // rvalue allowed for aliased function
+    tok.deserialize(jOutputRange!insert);
+    tok = json.jsonTokenizer;
+    // rvalue allowed when JOutputRange wraps pointer
+    // Maybe wrapping a function pointer should be forbidden, but I don't see why it hurts
+    tok.deserialize(jOutputRange!int(&insert));
+
+    assert(n==20);
+    assert(arr[0..20] == [0,1,2,3,4,5,6,7,8,9,0,1,2,3,4,5,6,7,8,9]);
+
+    // Struct outputranges work too
+    struct S {
+        void put(int i){
+            arr[n++] = i;
+        }
+    }
+    tok = json.jsonTokenizer;
+    auto r2= jOutputRange!int(S());
+    tok.deserialize(r2);
+    assert(n==30);
+    assert(arr[20..n] == [0,1,2,3,4,5,6,7,8,9]);
+
+    // Appender
+    import std.array;
+    tok = json.jsonTokenizer;
+    auto app = appender!(int[]);
+    auto r3 = jOutputRange!int(app);
+    tok.deserialize(r3);
+    assert(app.data[] == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+unittest
+{
+   static struct S 
+   {
+       int [] numbers;
+       void opCall(int i)
+       {
+           numbers ~= i;
+       }
+   }
+   S s;
+   foreach(i;0..6)
+       s(i);
+    auto json = `[6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    auto r = jOutputRange!(int)(&s);
+    tok.deserialize(r);
+    assert(s.numbers == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+/** refJOutputRange can be passed as rvalue.
+ * Realistically, most of the time you don't need refJOutputRange as an lvalue, allowing you to just wrap the range at the call site
+ */
+unittest
+{
+    import std.array;
+    auto r = appender!(int[]);
+    auto json = `[0,1,2,3,4,5,6,7,8,9]`;
+    auto tok = json.jsonTokenizer;
+    tok.deserialize(r.refJOutputRange!int);
+    assert(r.data == [0,1,2,3,4,5,6,7,8,9]);
+
+    // also works directly via chain
+    r = appender!(int[]);
+    json.deserialize(r.refJOutputRange!int);
+    assert(r.data == [0,1,2,3,4,5,6,7,8,9]);
+}
+
+/// Struct with outputrange member to map over the data
+unittest
+{
+   static struct ORange
+   {
+       bool[] overFive;
+       void opCall(int i)
+       {
+           overFive ~= i > 5;
+       }
+   }
+    static struct S {
+        JOutputRange!(ORange, int) n;
+        alias this = n;
+    }
+    auto json = `{"n": [0,10]}`;
+    auto s = json.deserialize!S;
+    assert(s.overFive == [false, true]);
+}
+
+unittest
+{
+    static struct S 
+    {
+        @ignore int[] arr;
+        @deserializeFun void s(string i)
+        {
+            arr ~= i.to!int;
+        }
+        @deserializeFun void d(double i)
+        {
+            arr ~= cast(int) i;
+        }
+    }
+    auto json = `{"s": ["1", "2"], "d": [3.0, 4.0]}`;
+    auto s = json.deserialize!S;
+    assert(s.arr == [1,2,3,4]);
+}
+
+/* Issue: When deserializing functions, return type must be void. This is annoying for short form lambda notation `(d) => acc += d` 
+ */
+unittest
+{
+    auto json = `[1,2,3,4]`;
+    int sum = 0;
+    static assert(!__traits(compiles, json.deserialize(jOutputRange!((double d) => sum += cast(int)d))));
+    json.deserialize(jOutputRange!((double d) => cast(void)(sum += cast(int)d)));
+    assert(sum == 10);
+}
+
+
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
     auto jsonItem = tokenizer.nextSignificant
@@ -338,44 +600,12 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-// TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-
     import std.array : Appender;
-    auto app = Appender!T();
+    auto app = jOutputRange!(ElementType!T)(Appender!T());
+    tokenizer.deserialize(app);
 
-    // check for an empty array (special case)
-    if(tokenizer.peek == JSONToken.ArrayEnd)
-    {
-        // parse it off
-        jsonItem = tokenizer.nextSignificant;
-        // nothing left to do
-        return;
-    }
-    // parse items and commas until we get an array end.
-    while(true)
-    {
-        typeof(item[0]) elem;
-        deserializeImpl(tokenizer, elem, relPol);
-        app ~= elem;
-        if(relPol == ReleasePolicy.afterMembers)
-            tokenizer.releaseParsed();
-        jsonItem = tokenizer.nextSignificant;
-        if(jsonItem.token == JSONToken.ArrayEnd)
-            break;
-        jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
-        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
-        {
-            // was a trailing comma. parse the array end and break
-            tokenizer.next;
-            break;
-        }
-    }
-
-    // fill in the data.
     item = app.data;
 }
 
@@ -534,6 +764,19 @@ private template SerializableMembers(T)
         enum SerializableMembers = Filter!(WithoutIgnore, staticMap!(FieldNameTuple, T, BaseClassesTuple!T));
 }
 
+enum deserializeFun;
+private template SerializableFunctions(T)
+{
+    import std.traits;
+    import std.meta;
+    enum WithDeserializeFuns(string s) = hasUDA!(__traits(getMember, T, s), deserializeFun);
+    //alias NameToSymbol(string s) = __traits(getMember, T, s);
+    enum isMethod(string s) = is(typeof(__traits(getMember, T, s)) == return);
+
+    enum SerializableFunctions = Filter!(isMethod,
+                Filter!(WithDeserializeFuns, __traits(allMembers, T)));
+}
+
 private template AllIgnoredMembers(T)
 {
     static if(is(T == struct))
@@ -557,7 +800,8 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
-    alias members = SerializableMembers!T;
+    import std.meta;
+    alias members = AliasSeq!(SerializableMembers!T, SerializableFunctions!T);
     alias ignoredMembers = AllIgnoredMembers!T;
 
     // TODO use bit array instead and core.bitop
@@ -631,7 +875,15 @@ OBJ_MEMBER_SWITCH:
                     else
                         enum jsonName = m;
                 case jsonName:
-                    tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                    static if(is(typeof(__traits(getMember, item, m)) == return))
+                    {
+                        alias ElemT = Parameters!(__traits(getMember, item, m))[0];
+                        // Need to wrap function call in a delegate due to dual context pointer issue
+                        auto j = jOutputRange!((ElemT s) => __traits(getMember, item, m)(s));
+                        tokenizer.deserialize(j, relPol);
+                    }
+                    else
+                        tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
                     visited[i] = true;
                     break OBJ_MEMBER_SWITCH;
                 }}
@@ -693,7 +945,7 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON") && !isInstanceOf!(JOutputRange, T))
 {
     // check to see if any member is defined as the representation
     alias representers = getSymbolsByUDA!(T, serializeAs);
@@ -775,7 +1027,6 @@ unittest
 }
 
 
-
 /** Deserialize the given type from the JSON data.
  * Note that all arrays are also iopipes, so you can pass in a `string` for `c`.
  * Throws:
@@ -796,15 +1047,22 @@ T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
     return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
 }
 
-/// ditto
-void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
+void deserialize(T, JT)(ref JT tokenizer,auto ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
+    static if(!__traits(isRef, item))
+    {
+        static assert(rvalueAllowed!T, "rvalue only allowed for JOutputRange with Reference or function/delegate");
+    }
     deserializeImpl(tokenizer, item, relPol);
 }
 
 /// ditto
-void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
+void deserialize(T, Chain)(auto ref Chain c, auto ref T item) if (isIopipe!Chain)
 {
+    static if(!__traits(isRef, item))
+    {
+        static assert(rvalueAllowed!T, "rvalue only allowed for JOutputRange with Reference or function/delegate");
+    }
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
