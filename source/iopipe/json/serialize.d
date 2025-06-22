@@ -32,10 +32,16 @@ import std.conv;
 import std.format;
 
 struct DefaultDeserializationPolicy {
+    int maxDepthAvailable = 64; // default depth
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
 
     // Called at beginning of struct/class deserialization
     bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer) {
+
+        if (maxDepthAvailable <= 0) {
+            throw new JSONIopipeException("Maximum deserialization depth exceeded");  
+        }
+        maxDepthAvailable--;
         
         // Pre-mark optional fields as visited
         alias members = SerializableMembers!T;
@@ -1230,7 +1236,13 @@ unittest
         }
     }`; 
 
-    auto person = deserializeWithPolicy!(Person)(jsonStr);
+    auto policy1 = DefaultDeserializationPolicy(1); // Set max depth to 1
+    assertThrown!JSONIopipeException(
+        deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy1)
+    );
+
+    auto policy2 = DefaultDeserializationPolicy(2); // Set max depth to 2
+    auto person = deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy2);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
