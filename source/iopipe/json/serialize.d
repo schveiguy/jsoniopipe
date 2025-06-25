@@ -32,16 +32,16 @@ import std.conv;
 import std.format;
 
 struct DefaultDeserializationPolicy {
+
+    /**
+     * The maximum depth check is only useful for extra UDA
+     * This is used to prevent stack overflow on deeply nested JSONValue tree.
+     */
     int maxDepthAvailable = 64; // default depth
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
 
     // Called at beginning of struct/class deserialization
-    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer) {
-
-        if (maxDepthAvailable <= 0) {
-            throw new JSONIopipeException("Maximum deserialization depth exceeded");  
-        }
-        maxDepthAvailable--;
+    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
         
         // Pre-mark optional fields as visited
         alias members = SerializableMembers!T;
@@ -50,6 +50,17 @@ struct DefaultDeserializationPolicy {
         static foreach(idx, m; members) {
             static if(hasUDA!(__traits(getMember, T, m), optional))
                 visited[idx] = true;
+            static if(hasUDA!(__traits(getMember, T, m), extras))
+            {
+                // this is the extras member, it holds any extra data that was not
+                // specified as a member.
+                static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                // initialize it for use
+                __traits(getMember, item, m).type = JSONType.Obj;
+                __traits(getMember, item, m).object = null;
+                // extras is always optional.
+                visited[idx] = true;
+            }
         }
 
         return visited;
@@ -64,6 +75,19 @@ struct DefaultDeserializationPolicy {
     ) {
         alias members = SerializableMembers!T;
         alias ignoredMembers = AllIgnoredMembers!T;
+
+        static foreach(idx, m; members)
+        {
+          static if(hasUDA!(__traits(getMember, T, m), extras))
+          {
+              // this is the extras member, it holds any extra data that was not
+              // specified as a member.
+              static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+              enum extrasMember = m;
+          }
+       }
+
+
         // Check each member to see if it matches
         switch(key)
         {
@@ -107,8 +131,18 @@ struct DefaultDeserializationPolicy {
             }
 
             default:
-            // If we get here, it's truly an unknown field
-            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+            static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+            {{
+                // any extras should be put in here
+                JSONValue!SType newItem;
+                tokenizer.deserializeImpl(newItem, relPol, this.maxDepthAvailable);
+                __traits(getMember, item, extrasMember).object[key] = newItem;
+            }}
+            else
+            {
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+            }
+            
         }
     }
     
@@ -714,9 +748,9 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
+private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol, int maxDepthAvailable = 64) if (isInstanceOf!(JSONValue, T))
 {
-    item = tokenizer.parseJSON!(typeof(T.str))(relPol);
+    item = tokenizer.parseJSON!(typeof(T.str))(relPol, maxDepthAvailable);
 }
 
 // if type is Nullable, first check for JSONToken.Null, and if not, try and
@@ -1085,7 +1119,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     
     
     // Begin deserialization
-    auto visited = policy.onObjectBegin!(JT, T)(tokenizer);
+    auto visited = policy.onObjectBegin!(JT, T)(tokenizer, item);
 
             
     tokenizer.nextSignificant
@@ -1211,44 +1245,48 @@ unittest
 
 unittest
 {
-    // Test deserializing a struct with nested objects
-
-    import std.exception;
-
-    struct Pet {
-        string name;
-        int age;
-    }
+    // Test maxDepth on deserializing a struct with nested objects in extra members.
     
-    struct Person {
-        string firstName;
-        string lastName;
-        int age;
-        Pet pet;
+    static struct T {
+        string name;
+	      @extras JSONValue!string stuff;
     }
+
+   
     auto jsonStr = `{
-        "firstName": "John", 
-        "lastName": "Doe", 
-        "age": 30, 
+        "name": "valid", 
+        "a": "another string", 
+        "b": 2, 
+        "c": 8.5,
         "pet": {
             "name": "Fido", 
             "age": 5
-        }
-    }`; 
+        }}`;
 
     auto policy1 = DefaultDeserializationPolicy(1); // Set max depth to 1
+    import std.exception;
+    // This should throw an exception because the depth exceeds 1
     assertThrown!JSONIopipeException(
-        deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy1)
+        deserializeWithPolicy!(T, DefaultDeserializationPolicy)(jsonStr, policy1)
     );
 
+    // Now deserialize with a higher max depth
     auto policy2 = DefaultDeserializationPolicy(2); // Set max depth to 2
-    auto person = deserializeWithPolicy!(Person, DefaultDeserializationPolicy)(jsonStr, policy2);
-    assert(person.firstName == "John");
-    assert(person.lastName == "Doe");
-    assert(person.age == 30);
-    assert(person.pet.name == "Fido");
-    assert(person.pet.age == 5);
+    auto t = deserializeWithPolicy!(T, DefaultDeserializationPolicy)(jsonStr, policy2);
+    assert(t.name == "valid");   
+    assert(t.stuff.object["a"].type == JSONType.String);
+    assert(t.stuff.object["a"].str == "another string");
+    assert(t.stuff.object["b"].type == JSONType.Integer);
+    assert(t.stuff.object["b"].integer == 2);
+    assert(t.stuff.object["c"].type == JSONType.Floating);
+    assert(t.stuff.object["c"].floating == 8.5);
+    assert(t.stuff.object["pet"].type == JSONType.Obj);
+    assert(t.stuff.object["pet"].object["name"].type == JSONType.String);
+    assert(t.stuff.object["pet"].object["name"].str == "Fido");
+    assert(t.stuff.object["pet"].object["age"].type == JSONType.Integer);
+    assert(t.stuff.object["pet"].object["age"].integer == 5);
 }
+
 
 unittest
 {
