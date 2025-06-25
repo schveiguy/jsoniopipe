@@ -7,6 +7,7 @@ import iopipe.json.parser;
 public import iopipe.json.common;
 import iopipe.traits;
 import std.traits;
+import iopipe.json.serialize;
 
 enum JSONType
 {
@@ -34,15 +35,24 @@ struct JSONValue(SType)
     }
 }
 
-private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
+private JSONValue!SType buildValue(SType, Tokenizer)(
+    ref Tokenizer parser,
+    JSONItem item,
+    ReleasePolicy relPol,
+    int maxDepthAvailable = 64)
 {
+    // Check depth before proceeding
+    if (maxDepthAvailable <= 0) {
+        throw new JSONIopipeException("Maximum JSON nesting depth exceeded");  
+    }
+    
     import std.conv;
 
     alias JT = JSONValue!SType;
     with(JSONToken) switch (item.token)
     {
     case ObjectStart:
-        return parser.buildObject!SType(relPol);
+        return parser.buildObject!SType(relPol, maxDepthAvailable - 1);
     case ArrayStart:
         return parser.buildArray!SType(relPol);
     case String:
@@ -101,7 +111,10 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
     }
 }
 
-private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
+private JSONValue!SType buildObject(SType, Tokenizer)(
+    ref Tokenizer parser,
+    ReleasePolicy relPol,
+    int maxDepthAvailable = 64)
 {
 
     alias JT = JSONValue!SType;
@@ -117,12 +130,12 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, Rele
         }
         // the item must be a string
         assert(item.token == JSONToken.String);
-        auto name = parser.buildValue!SType(item, relPol);
+        auto name = parser.buildValue!SType(item, relPol, maxDepthAvailable);
         item = parser.next();
         // should always be colon
         assert(item.token == JSONToken.Colon);
         item = parser.next();
-        obj.object[name.str.idup] = parser.buildValue!SType(item, relPol);
+        obj.object[name.str.idup] = parser.buildValue!SType(item, relPol, maxDepthAvailable);
         // release any parsed data.
         if(relPol == ReleasePolicy.afterMembers)
             parser.releaseParsed();
@@ -153,30 +166,36 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
  * Throws:
  * 	JSONIopipeException on parser error.
  */
-auto parseJSON(Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
+auto parseJSON(Tokenizer)(
+    ref Tokenizer tokenizer, 
+    ReleasePolicy relPol = ReleasePolicy.afterMembers,
+    int maxDepthAvailable = 64) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
-    return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer, relPol);
+    return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer, relPol, maxDepthAvailable);
 }
 
-auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
+auto parseJSON(SType, Tokenizer)(
+    ref Tokenizer tokenizer, 
+    ReleasePolicy relPol = ReleasePolicy.afterMembers,
+    int maxDepthAvailable = 64) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
     auto item = tokenizer.next();
-    auto result = tokenizer.buildValue!SType(item, relPol);
+    auto result = tokenizer.buildValue!SType(item, relPol, maxDepthAvailable);
     if(relPol == ReleasePolicy.afterMembers)
         tokenizer.releaseParsed();
     return result;
 }
 
-auto parseJSON(SType = void, Chain)(Chain chain) if (isIopipe!Chain && is(SType == void))
+auto parseJSON(SType = void, Chain)(Chain chain, int maxDepthAvailable = 64) if (isIopipe!Chain && is(SType == void))
 {
-    return parseJSON!(WindowType!Chain)(chain);
+    return parseJSON!(WindowType!Chain)(chain, maxDepthAvailable);
 }
 
-auto parseJSON(SType, Chain)(Chain chain) if (isIopipe!Chain)
+auto parseJSON(SType, Chain)(Chain chain, int maxDepthAvailable = 64) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(chain.window[0] = chain.window[1]));
     auto tokenizer = (chain).jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return tokenizer.parseJSON!SType(ReleasePolicy.afterMembers);
+    return tokenizer.parseJSON!SType(ReleasePolicy.afterMembers, maxDepthAvailable);
 }
 
 void printTree(JT)(JT item)
