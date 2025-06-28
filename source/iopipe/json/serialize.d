@@ -35,7 +35,7 @@ struct DefaultDeserializationPolicy {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
 
     // Called at beginning of struct/class deserialization
-    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer) {
+    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
         
         // Pre-mark optional fields as visited
         alias members = SerializableMembers!T;
@@ -73,10 +73,7 @@ struct DefaultDeserializationPolicy {
                   
                   case jsonName:
                       // Choose appropriate deserialization method based on member type               
-                      static if(__traits(compiles, deserializeImplWithPolicy(tokenizer, __traits(getMember, item, memberName), this)))
-                          deserializeImplWithPolicy(tokenizer, __traits(getMember, item, memberName), this);
-                      else
-                          deserializeImpl(tokenizer, __traits(getMember, item, memberName), this.relPol);
+                      deserializeItem(this, tokenizer, __traits(getMember, item, memberName));
                       visited[i] = true; // Mark as visited
                       
                       if(this.relPol == ReleasePolicy.afterMembers)
@@ -109,7 +106,7 @@ struct DefaultDeserializationPolicy {
 
     
     // Called at end of deserialization
-    void onObjectEnd(JT, T)(ref JT tokenizer, ref bool[SerializableMembers!T.length] visited) {
+    void onObjectEnd(JT, T)(ref JT tokenizer, ref T item, ref bool[SerializableMembers!T.length] visited) {
         if(this.relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
         
@@ -1071,15 +1068,15 @@ unittest
 }
 
 private void deserializeImplWithPolicy(T, JT, Policy)(
+    ref Policy policy,
     ref JT tokenizer,
     ref T item,
-    ref Policy policy
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     
     
     // Begin deserialization
-    auto visited = policy.onObjectBegin!(JT, T)(tokenizer);
+    auto context = policy.onObjectBegin(tokenizer, item);
 
             
     tokenizer.nextSignificant
@@ -1118,7 +1115,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
         
         // Let the policy handle this field
-        policy.onField!(JT, T)(tokenizer, item, key, visited);
+        policy.onField(tokenizer, item, key, context);
         
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
         {
@@ -1130,60 +1127,90 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     }
     
     // End deserialization
-    policy.onObjectEnd!(JT, T)(tokenizer, visited);
+    policy.onObjectEnd(tokenizer, item, context);
 
     tokenizer.nextSignificant
         .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
         
 }
 
+// entry point for deserializing any specified type
+void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
+    static if(__traits(compiles, policy.deserializeImpl(tokenizer, item))) {
+        policy.deserializeImpl(tokenizer, item);
+    }
+    else static if(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, item)))
+        deserializeImplWithPolicy(policy, tokenizer, item);
+    else {
+        // fall back to non-policy implementation. Assume relPol is in the policy (for now).
+        deserializeImpl(tokenizer, item, policy.relPol);
+    }
+}
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
-    ref JT tokenizer, 
-    Policy policy = Policy()
+
+void deserializeWithPolicy(T, JT, Policy)(
+    ref JT tokenizer,
+    ref T item,
+    Policy policy
+) if (isInstanceOf!(JSONTokenizer, JT))
+{
+    deserializeItem(policy, tokenizer, item);
+}
+
+T deserializeWithPolicy(T, JT, Policy)(
+    ref JT tokenizer,
+    Policy policy
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
-    deserializeImplWithPolicy!(T, JT, Policy)(tokenizer, result, policy);
+    deserializeWithPolicy(tokenizer, result, policy);
     return result;
 }
 
-void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, JT)(
+T deserializeWithPolicy(T, JT)(
     ref JT tokenizer,
-    ref T item,
-    Policy policy = Policy()
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    deserializeImplWithPolicy!(T, JT, Policy)(tokenizer, item, policy);
+    auto policy = DefaultDeserializationPolicy();
+    return deserializeWithPolicy!T(tokenizer, policy);
 }
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
+void deserializeWithPolicy(T, JT)(
+    ref JT tokenizer,
+    ref T item
+) if (isInstanceOf!(JSONTokenizer, JT))
+{
+    auto policy = DefaultDeserializationPolicy();
+    deserializeWithPolicy(tokenizer, item, policy);
+}
+
+T deserializeWithPolicy(T, Chain)(
     auto ref Chain c
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy!(T, Policy)(tokenizer);
+    return deserializeWithPolicy!T(tokenizer);
 }
 
-T deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
+T deserializeWithPolicy(T, Policy, Chain)(
     auto ref Chain c,
     Policy policy
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy!(T, Policy)(tokenizer, policy);
+    return deserializeWithPolicy(tokenizer, policy);
 }
 
-void deserializeWithPolicy(T, Policy = DefaultDeserializationPolicy, Chain)(
+void deserializeWithPolicy(T, Chain)(
     auto ref Chain c,
     ref T item
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    deserializeWithPolicy!(T, Policy)(tokenizer, item);
+    deserializeWithPolicy(tokenizer, item);
 }
 
 
@@ -1196,7 +1223,7 @@ unittest
         int age;
     }
     auto jsonStr = `{"firstName": "John", "lastName": "Doe", "age": 30}`;
-    auto person = deserializeWithPolicy!(Person)(jsonStr);   
+    auto person = deserializeWithPolicy!Person(jsonStr);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
@@ -1230,7 +1257,7 @@ unittest
         }
     }`; 
 
-    auto person = deserializeWithPolicy!(Person)(jsonStr);
+    auto person = deserializeWithPolicy!Person(jsonStr);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
