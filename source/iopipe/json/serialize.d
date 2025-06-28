@@ -50,12 +50,13 @@ struct DefaultDeserializationPolicy {
     }
     
     // Handles a field (returns true if handled)
-    void onField(JT, T)(
+    void onField(JT, T, size_t N)(
         ref JT tokenizer, 
         ref T item, 
         string key,
-        ref bool[SerializableMembers!T.length] visited 
+        ref bool[N] visited
     ) {
+        static assert(N == SerializeableMembers!T);
         alias members = SerializableMembers!T;
         alias ignoredMembers = AllIgnoredMembers!T;
         // Check each member to see if it matches
@@ -106,7 +107,9 @@ struct DefaultDeserializationPolicy {
 
     
     // Called at end of deserialization
-    void onObjectEnd(JT, T)(ref JT tokenizer, ref T item, ref bool[SerializableMembers!T.length] visited) {
+    void onObjectEnd(JT, T, size_t N)(ref JT tokenizer, ref T item, ref bool[N] visited) {
+        static assert(N == SerializeableMembers!T);
+
         if(this.relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
         
@@ -1139,8 +1142,9 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
     static if(__traits(compiles, policy.deserializeImpl(tokenizer, item))) {
         policy.deserializeImpl(tokenizer, item);
     }
-    else static if(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, item)))
+    else static if(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, item))) {
         deserializeImplWithPolicy(policy, tokenizer, item);
+    }
     else {
         // fall back to non-policy implementation. Assume relPol is in the policy (for now).
         deserializeImpl(tokenizer, item, policy.relPol);
@@ -1200,7 +1204,7 @@ T deserializeWithPolicy(T, Policy, Chain)(
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy(tokenizer, policy);
+    return deserializeWithPolicy!T(tokenizer, policy);
 }
 
 void deserializeWithPolicy(T, Chain)(
@@ -1263,6 +1267,42 @@ unittest
     assert(person.age == 30);
     assert(person.pet.name == "Fido");
     assert(person.pet.age == 5);
+}
+
+unittest
+{
+    import std.datetime.date;
+    // Test custom handling of a type with a policy.
+
+    static struct DTStringPolicy {
+        void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing DateTime");
+            item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+        }
+    }
+
+    auto pol = DTStringPolicy();
+    auto dt = deserializeWithPolicy!DateTime(`"2001-Jan-01 12:00:00"`, pol);
+    assert(dt == DateTime(2001, 1, 1, 12, 0, 0));
+
+    /* TODO: need global onX functions to make this work.
+    static struct Person {
+        string name;
+        int age;
+        DateTime dob;
+    }
+
+    auto jsonStr = `{
+        "name": "John Doe",
+        "age": 30,
+        "dob" : "2001-Jan-01 12:00:00"
+    }`;
+    pol.deserializeImpl(tokenizer, dt);
+    auto p = deserializeWithPolicy!Person(jsonStr, pol);
+    assert(p.name == "John Doe");
+    assert(p.age == 30);
+    assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));*/
 }
 
 unittest
