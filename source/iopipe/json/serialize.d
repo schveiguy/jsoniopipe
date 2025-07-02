@@ -56,7 +56,7 @@ struct DefaultDeserializationPolicy {
         string key,
         ref bool[N] visited
     ) {
-        static assert(N == SerializeableMembers!T);
+        static assert(N == SerializableMembers!T.length);
         alias members = SerializableMembers!T;
         alias ignoredMembers = AllIgnoredMembers!T;
         // Check each member to see if it matches
@@ -108,7 +108,7 @@ struct DefaultDeserializationPolicy {
     
     // Called at end of deserialization
     void onObjectEnd(JT, T, size_t N)(ref JT tokenizer, ref T item, ref bool[N] visited) {
-        static assert(N == SerializeableMembers!T);
+        static assert(N == SerializableMembers!T.length);
 
         if(this.relPol == ReleasePolicy.afterMembers)
             tokenizer.releaseParsed();
@@ -1231,6 +1231,12 @@ unittest
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
+
+    // verify deserialize item with policy compiles as expected
+    auto policy = DefaultDeserializationPolicy();
+    Person p;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 }
 
 
