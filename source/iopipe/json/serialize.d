@@ -36,17 +36,8 @@ struct DefaultDeserializationPolicy {
 
     // Called at beginning of struct/class deserialization
     bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
-        
-        // Pre-mark optional fields as visited
-        alias members = SerializableMembers!T;
-        bool[members.length] visited;
-
-        static foreach(idx, m; members) {
-            static if(hasUDA!(__traits(getMember, T, m), optional))
-                visited[idx] = true;
-        }
-
-        return visited;
+        // Call the default module implementation
+        return .onObjectBegin(this, tokenizer, item);
     }
     
     // Handles a field (returns true if handled)
@@ -57,77 +48,95 @@ struct DefaultDeserializationPolicy {
         ref bool[N] visited
     ) {
         static assert(N == SerializableMembers!T.length);
-        alias members = SerializableMembers!T;
-        alias ignoredMembers = AllIgnoredMembers!T;
-        // Check each member to see if it matches
-        switch(key)
-        {
-            static foreach(i, memberName; members) {
-                { // Add a block scope to contain each declaration, avoiding duplicate jsonName
-                  // declarations in the foreach loop.
-                  static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                      enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
-                  }
-                  else {
-                      enum jsonName = memberName;
-                  }
-                  
-                  case jsonName:
-                      // Choose appropriate deserialization method based on member type               
-                      deserializeItem(this, tokenizer, __traits(getMember, item, memberName));
-                      visited[i] = true; // Mark as visited
-                      
-                      if(this.relPol == ReleasePolicy.afterMembers)
-                        tokenizer.releaseParsed();
-                      return;
-                  
-                }
-            }
-
-            static if(ignoredMembers.length > 0)
-            {
-                static foreach(m; ignoredMembers)
-                {
-                    static foreach(s; m.ignoredMembers)
-                    {
-                    case s:
-                    }
-                }
-                // ignored members are ignored if they show up
-                tokenizer.skipItem();
-                break;
-            }
-
-            default:
-            // If we get here, it's truly an unknown field
-            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+        .onField(this, tokenizer, item, key, visited);
+        if(relPol == ReleasePolicy.afterMembers) {
+            tokenizer.releaseParsed();
         }
     }
-    
-
     
     // Called at end of deserialization
     void onObjectEnd(JT, T, size_t N)(ref JT tokenizer, ref T item, ref bool[N] visited) {
         static assert(N == SerializableMembers!T.length);
 
-        if(this.relPol == ReleasePolicy.afterMembers)
+        if(this.relPol == ReleasePolicy.afterMembers) {
             tokenizer.releaseParsed();
-        
-        alias members = SerializableMembers!T;
+        }
+        .onObjectEnd(this, tokenizer, item, visited);
+    }
+}
 
-        // ensure all members visited
-        static if(members.length)
-        {
-            import std.algorithm : canFind, map, filter;
-            if(visited[].canFind(false))
-            {
-                // this is a bit ugly, but gives a nicer message.
-                static immutable marr = [members];
-                import std.range : enumerate;
-                throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
+    alias members = SerializableMembers!T;
+    bool[members.length] visited;
+    // Pre-mark optional fields as visited
+    static foreach(idx, m; members) {
+        static if(hasUDA!(__traits(getMember, T, m), optional))
+            visited[idx] = true;
+    }
+
+    return visited;
+}
+
+private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, string key, ref bool[N] visited) {
+    alias members = SerializableMembers!T;
+    alias ignoredMembers = AllIgnoredMembers!T;
+    // Check each member to see if it matches
+    switch(key)
+    {
+        static foreach(i, memberName; members) {
+            { // Add a block scope to contain each declaration, avoiding duplicate jsonName
+              // declarations in the foreach loop.
+              static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                  enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+              }
+              else {
+                  enum jsonName = memberName;
+              }
+              
+              case jsonName:
+                  // Choose appropriate deserialization method based on member type               
+                  deserializeItem(policy, tokenizer, __traits(getMember, item, memberName));
+                  visited[i] = true; // Mark as visited 
+                  return;  // ← IMPORTANT: Returns immediately!
             }
         }
+
+        static if(ignoredMembers.length > 0)
+        {
+            static foreach(m; ignoredMembers)
+            {
+                static foreach(s; m.ignoredMembers)
+                {
+                case s:
+                }
+            }
+            // ignored members are ignored if they show up
+            tokenizer.skipItem();
+            break;
+        }
+
+        default:
+        // If we get here, it's truly an unknown field
+        throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
     }
+    
+}
+
+private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
+    alias members = SerializableMembers!T;
+    // ensure all members visited
+    static if(members.length)
+    {
+        import std.algorithm : canFind, map, filter;
+        if(visited[].canFind(false))
+        {
+            // this is a bit ugly, but gives a nicer message.
+            static immutable marr = [members];
+            import std.range : enumerate;
+            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+        }
+    }
+    
 }
 
 // define some UDAs to affect serialization
@@ -1281,6 +1290,7 @@ unittest
     // Test custom handling of a type with a policy.
 
     static struct DTStringPolicy {
+        ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
         void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
             auto jsonItem = tokenizer.nextSignificant
                 .jsonExpect(JSONToken.String, "Parsing DateTime");
@@ -1292,7 +1302,6 @@ unittest
     auto dt = deserializeWithPolicy!DateTime(`"2001-Jan-01 12:00:00"`, pol);
     assert(dt == DateTime(2001, 1, 1, 12, 0, 0));
 
-    /* TODO: need global onX functions to make this work.
     static struct Person {
         string name;
         int age;
@@ -1304,11 +1313,10 @@ unittest
         "age": 30,
         "dob" : "2001-Jan-01 12:00:00"
     }`;
-    pol.deserializeImpl(tokenizer, dt);
     auto p = deserializeWithPolicy!Person(jsonStr, pol);
     assert(p.name == "John Doe");
     assert(p.age == 30);
-    assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));*/
+    assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));
 }
 
 unittest
