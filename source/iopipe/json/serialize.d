@@ -33,12 +33,6 @@ import std.format;
 
 struct DefaultDeserializationPolicy {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
-
-    // Called at beginning of struct/class deserialization
-    bool[SerializableMembers!T.length] onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
-        // Call the default module implementation
-        return .onObjectBegin(this, tokenizer, item);
-    }
     
     // Handles a field (returns true if handled)
     void onField(JT, T, size_t N)(
@@ -47,22 +41,12 @@ struct DefaultDeserializationPolicy {
         string key,
         ref bool[N] visited
     ) {
-        static assert(N == SerializableMembers!T.length);
         .onField(this, tokenizer, item, key, visited);
         if(relPol == ReleasePolicy.afterMembers) {
             tokenizer.releaseParsed();
         }
     }
     
-    // Called at end of deserialization
-    void onObjectEnd(JT, T, size_t N)(ref JT tokenizer, ref T item, ref bool[N] visited) {
-        static assert(N == SerializableMembers!T.length);
-
-        if(this.relPol == ReleasePolicy.afterMembers) {
-            tokenizer.releaseParsed();
-        }
-        .onObjectEnd(this, tokenizer, item, visited);
-    }
 }
 
 private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
@@ -78,6 +62,7 @@ private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
 }
 
 private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, string key, ref bool[N] visited) {
+    static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
     // Check each member to see if it matches
@@ -123,6 +108,7 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
 }
 
 private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
+    static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
     // ensure all members visited
     static if(members.length)
@@ -1155,8 +1141,13 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
         deserializeImplWithPolicy(policy, tokenizer, item);
     }
     else {
-        // fall back to non-policy implementation. Assume relPol is in the policy (for now).
-        deserializeImpl(tokenizer, item, policy.relPol);
+        // fall back to non-policy implementation. Assume ReleasePolicy.afterMembers is default.
+        static if (__traits(hasMember, typeof(policy), "relPol")) {
+            deserializeImpl(tokenizer, item, policy.relPol);
+        }
+        else {
+            deserializeImpl(tokenizer, item, ReleasePolicy.afterMembers);
+        }
     }
 }
 
@@ -1290,7 +1281,6 @@ unittest
     // Test custom handling of a type with a policy.
 
     static struct DTStringPolicy {
-        ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
         void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
             auto jsonItem = tokenizer.nextSignificant
                 .jsonExpect(JSONToken.String, "Parsing DateTime");
