@@ -54,8 +54,20 @@ private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     bool[members.length] visited;
     // Pre-mark optional fields as visited
     static foreach(idx, m; members) {
-        static if(hasUDA!(__traits(getMember, T, m), optional))
+        static if(hasUDA!(__traits(getMember, T, m), optional)) {
             visited[idx] = true;
+        }
+        static if(hasUDA!(__traits(getMember, T, m), extras))
+        {
+            // this is the extras member, it holds any extra data that was not
+            // specified as a member.
+            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+            // initialize it for use
+            __traits(getMember, item, m).type = JSONType.Obj;
+            __traits(getMember, item, m).object = null;
+            // extras is always optional.
+            visited[idx] = true;
+        }
     }
 
     return visited;
@@ -65,6 +77,17 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
+
+    static foreach(idx, m; members)
+    {
+        static if(hasUDA!(__traits(getMember, T, m), extras))
+        {
+            // this is the extras member, it holds any extra data that was not
+            // specified as a member.
+            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+            enum extrasMember = m;
+        }
+    }
     // Check each member to see if it matches
     switch(key)
     {
@@ -101,8 +124,16 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
         }
 
         default:
-        // If we get here, it's truly an unknown field
-        throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+        static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+        {{
+            // any extras should be put in here
+            JSONValue!SType newItem;
+            deserializeItem(policy, tokenizer, newItem);
+            __traits(getMember, item, extrasMember).object[key] = newItem;
+        }} else {
+            // If we get here, it's truly an unknown field
+            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+        }
     }
     
 }
@@ -1307,6 +1338,42 @@ unittest
     assert(p.name == "John Doe");
     assert(p.age == 30);
     assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));
+}
+
+unittest
+{
+    // Test on new design policy in extra members.
+
+    static struct T {
+        string name;
+        @extras JSONValue!string stuff;
+    }
+
+   
+    auto jsonStr = `{
+        "name": "valid", 
+        "a": "another string", 
+        "b": 2, 
+        "c": 8.5,
+        "pet": {
+            "name": "Fido", 
+            "age": 5
+        }}`;
+
+
+    auto t = deserializeWithPolicy!T(jsonStr);
+    assert(t.name == "valid");   
+    assert(t.stuff.object["a"].type == JSONType.String);
+    assert(t.stuff.object["a"].str == "another string");
+    assert(t.stuff.object["b"].type == JSONType.Integer);
+    assert(t.stuff.object["b"].integer == 2);
+    assert(t.stuff.object["c"].type == JSONType.Floating);
+    assert(t.stuff.object["c"].floating == 8.5);
+    assert(t.stuff.object["pet"].type == JSONType.Obj);
+    assert(t.stuff.object["pet"].object["name"].type == JSONType.String);
+    assert(t.stuff.object["pet"].object["name"].str == "Fido");
+    assert(t.stuff.object["pet"].object["age"].type == JSONType.Integer);
+    assert(t.stuff.object["pet"].object["age"].integer == 5);
 }
 
 unittest
