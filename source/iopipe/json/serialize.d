@@ -78,22 +78,19 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
 
-    static foreach(idx, m; members)
-    {
-        static if(hasUDA!(__traits(getMember, T, m), extras))
-        {
-            // this is the extras member, it holds any extra data that was not
-            // specified as a member.
-            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-            enum extrasMember = m;
-        }
-    }
     // Check each member to see if it matches
     switch(key)
     {
         static foreach(i, memberName; members) {
             { // Add a block scope to contain each declaration, avoiding duplicate jsonName
               // declarations in the foreach loop.
+              static if(hasUDA!(__traits(getMember, T, memberName), extras))
+              {
+                  // this is the extras member, it holds any extra data that was not
+                  // specified as a member.
+                  static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                  enum extrasMember = m;
+              }
               static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
                   enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
               }
@@ -108,6 +105,9 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
                   return;  // ← IMPORTANT: Returns immediately!
             }
         }
+
+        enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
+
 
         static if(ignoredMembers.length > 0)
         {
@@ -124,6 +124,11 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
         }
 
         default:
+        static if(ignoreExtras)
+        {
+            tokenizer.skipItem();
+            return; // Ignore unknown fields
+        }
         static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
         {{
             // any extras should be put in here
@@ -302,6 +307,13 @@ unittest {
     assert(t.x == 1);
 
     assert(t.serialize == `{"s" : "hi", "x" : 1}`);
+
+    deserializeWithPolicy!S(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown!JSONIopipeException;
+    auto tt = deserializeWithPolicy!T(`{"s" : "hi", "x": 1, "extra": "errors"}`);
+    assert(tt.s == "hi");
+    assert(tt.x == 1);
+    assert(tt.serialize == `{"s" : "hi", "x" : 1}`);
+
 }
 
 /**
