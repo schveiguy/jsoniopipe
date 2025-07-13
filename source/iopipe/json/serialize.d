@@ -61,6 +61,13 @@ private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     return visited;
 }
 
+private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) if (__traits(isStaticArray, T)) 
+{
+    enum size_t arrayLength = T.length;
+    bool[arrayLength] visited;
+    return visited;
+}
+
 private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, string key, ref bool[N] visited) {
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
@@ -107,6 +114,14 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     
 }
 
+private void onArrayElement(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ref bool[N] visited) if (__traits(isStaticArray, T)) 
+{
+    static assert(N == T.length);
+    // Deserialize the item at the given index
+    deserializeItem(policy, tokenizer, item[idx]);
+    visited[idx] = true; // Mark as visited
+}
+
 private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
@@ -123,6 +138,27 @@ private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref
         }
     }
     
+}
+
+private void onArrayEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) if (__traits(isStaticArray, T)) 
+{
+    static assert(N == T.length);
+    // ensure all members visited
+    static if(T.length)
+    {
+        import std.algorithm : canFind, map, filter;
+        if(visited[].canFind(false))
+        {
+            import std.range : enumerate;
+            auto unprocessedIndices = visited[]
+                .enumerate
+                .filter!(a => !a[1])  // Find elements where visited[i] == false
+                .map!(a => a[0]);     // Get the indices
+            
+            throw new JSONIopipeException(format("The following elements of `%s` were not specified: indices %-(%s, %)", 
+                                                T.stringof, unprocessedIndices));
+        }
+    }
 }
 
 // define some UDAs to affect serialization
@@ -1132,8 +1168,157 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
         
 }
 
+private void deserializeImplWithPolicy(T, JT, Policy)(
+    ref Policy policy,
+    ref JT tokenizer,
+    ref T item
+) if (__traits(isStaticArray, T))
+{
+    auto visited = onArrayBegin(policy, tokenizer, item);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+
+    bool first = true;
+    foreach(idx, ref elem; item)
+    {
+        if(!first)
+        {
+            // verify there's a comma
+            jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
+        }
+        first = false;
+        policy.onArrayElement(tokenizer, item, idx, visited);
+    }
+
+    policy.onArrayEnd(tokenizer, item, visited);
+
+
+    /**
+     * The code about ignoreExtras here seems useless
+     * because UDA @ignoreExtras is not supported in declarations like this:
+     * @ignoreExtras
+     * int[3] arr;
+     */
+    enum ignoreExtras = hasUDA!(T, .ignoreExtras);
+    // if we have an extras member, we need to skip it
+    static if (ignoreExtras)
+    {
+      
+        while (tokenizer.peekSignificant() != JSONToken.ArrayEnd)
+        {
+            tokenizer.nextSignificant();
+        }
+    }
+
+    // verify we got an end array element
+    jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+}
+
+
+unittest
+{
+    // Test a simple staticArray with a default policy
+    auto jsonStr = `[1, 2, 3]`;
+    int[3] arr; 
+    arr = deserializeWithPolicy!(int[3])(jsonStr);
+
+    assert(arr[0] == 1);
+    assert(arr[1] == 2);
+    assert(arr[2] == 3);
+
+    // verify deserialize item with policy compiles as expected
+    auto policy = DefaultDeserializationPolicy();
+    int[3] p;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
+
+    import std.exception;
+    // Test handling of JSON arrays with extra elements
+    auto jsonWithExtra = `[1, 2, 3, 4, 5]`;  // Has 5 elements
+    int[3] smallerArray;  // Only has space for 3 elements
+    
+    // This should throw an exception - can't deserialize more elements than array size
+    assertThrown!JSONIopipeException(
+        deserializeWithPolicy!(int[3])(jsonWithExtra)
+    );
+    
+    
+    // Test a custom policy that ignores extra elements in arrays
+    // It looks like @ignoreExtras is not supported in this context, so we create a custom policy
+    static struct IgnoreExtrasPolicy {
+    
+        // Custom handling for arrays with extra elements
+        void onArrayEnd(JT, T, size_t N)(ref JT tokenizer, ref T item, ref bool[N] visited) 
+        if (__traits(isStaticArray, T)) {
+            // Skip any extra elements without throwing
+            while (tokenizer.peekSignificant() != JSONToken.ArrayEnd) {
+                tokenizer.nextSignificant();
+            }
+        }
+    }
+
+    int[2] limitedArray;
+    auto ignorePolicy = IgnoreExtrasPolicy();
+    limitedArray = deserializeWithPolicy!(int[2])(jsonWithExtra, ignorePolicy);
+
+    // Should have only taken the first 2 elements
+    assert(limitedArray[0] == 1);
+    assert(limitedArray[1] == 2);
+
+}
+
+
+unittest
+{
+    // Test deserializing DateTime with a custom policy
+    import std.datetime.date;
+    
+    static struct DTStringPolicy {
+        void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing DateTime");
+            item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+        }
+    }
+    
+    auto policy = DTStringPolicy();
+    auto jsonStr = `["2001-Jan-01 12:00:00", "2002-Feb-15 13:30:45", "2003-Mar-20 14:15:30"]`;
+    DateTime[3] dates;
+    dates = deserializeWithPolicy!(DateTime[3])(jsonStr, policy);
+
+    assert(dates[0] == DateTime(2001, 1, 1, 12, 0, 0));
+    assert(dates[1] == DateTime(2002, 2, 15, 13, 30, 45));
+    assert(dates[2] == DateTime(2003, 3, 20, 14, 15, 30));
+
+     static struct Worker {
+        string name;
+        int age;
+        DateTime[3] workSchedule;  // Array of work datetime entries
+    }
+
+    auto jsonWorker = `{
+        "name": "Alice Smith",
+        "age": 32,
+        "workSchedule": [
+            "2023-Jun-15 09:00:00",
+            "2023-Jun-16 09:30:00", 
+            "2023-Jun-17 08:45:00"
+        ]
+    }`;
+
+    auto worker = deserializeWithPolicy!Worker(jsonWorker, policy);
+    assert(worker.name == "Alice Smith");
+    assert(worker.age == 32);
+    assert(worker.workSchedule[0] == DateTime(2023, 6, 15, 9, 0, 0));
+    assert(worker.workSchedule[1] == DateTime(2023, 6, 16, 9, 30, 0));
+    assert(worker.workSchedule[2] == DateTime(2023, 6, 17, 8, 45, 0));
+}
+
 // entry point for deserializing any specified type
 void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
+    // pragma(msg, "deserializeItem called with T = ", T);
     static if(__traits(compiles, policy.deserializeImpl(tokenizer, item))) {
         policy.deserializeImpl(tokenizer, item);
     }
@@ -1944,8 +2129,6 @@ unittest
         assert(s2WithPolicy.obj1.d == real.infinity);
         assert(s2WithPolicy.obj1.e == -0x42);
         assert(s2WithPolicy.arr == ["abc", "def"]);
-
-
     }}
 } 
 
