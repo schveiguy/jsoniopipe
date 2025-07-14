@@ -78,31 +78,38 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
 
+    static foreach(idx, m; members)
+    {
+      static if(hasUDA!(__traits(getMember, T, m), extras))
+      {
+          // this is the extras member, it holds any extra data that was not
+          // specified as a member.
+          static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+          enum extrasMember = m;
+      }
+    }
+
     // Check each member to see if it matches
     switch(key)
     {
         static foreach(i, memberName; members) {
             { // Add a block scope to contain each declaration, avoiding duplicate jsonName
               // declarations in the foreach loop.
-              static if(hasUDA!(__traits(getMember, T, memberName), extras))
-              {
-                  // this is the extras member, it holds any extra data that was not
-                  // specified as a member.
-                  static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-                  enum extrasMember = m;
-              }
-              static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                  enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
-              }
-              else {
-                  enum jsonName = memberName;
-              }
+                static if(!hasUDA!(__traits(getMember, T, memberName), extras)) { 
+                    static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                        enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                    }
+                    else {
+                        enum jsonName = memberName;
+                    }
+
+                    case jsonName:
+                    // Choose appropriate deserialization method based on member type               
+                    deserializeItem(policy, tokenizer, __traits(getMember, item, memberName));
+                    visited[i] = true; // Mark as visited 
+                    return;  // ← IMPORTANT: Returns immediately!
+                }
               
-              case jsonName:
-                  // Choose appropriate deserialization method based on member type               
-                  deserializeItem(policy, tokenizer, __traits(getMember, item, memberName));
-                  visited[i] = true; // Mark as visited 
-                  return;  // ← IMPORTANT: Returns immediately!
             }
         }
 
@@ -130,12 +137,12 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
             return; // Ignore unknown fields
         }
         static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
-        {{
+        {
             // any extras should be put in here
             JSONValue!SType newItem;
             deserializeItem(policy, tokenizer, newItem);
             __traits(getMember, item, extrasMember).object[key] = newItem;
-        }} else {
+        } else {
             // If we get here, it's truly an unknown field
             throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
         }
@@ -1372,9 +1379,15 @@ unittest
             "age": 5
         }}`;
 
+    // verify deserialize item with policy compiles as expected
+    auto policy = DefaultDeserializationPolicy();
+    T tt;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, tt)));
 
     auto t = deserializeWithPolicy!T(jsonStr);
     assert(t.name == "valid");   
+    assert(t.stuff.type == JSONType.Obj);
     assert(t.stuff.object["a"].type == JSONType.String);
     assert(t.stuff.object["a"].str == "another string");
     assert(t.stuff.object["b"].type == JSONType.Integer);
@@ -1386,6 +1399,55 @@ unittest
     assert(t.stuff.object["pet"].object["name"].str == "Fido");
     assert(t.stuff.object["pet"].object["age"].type == JSONType.Integer);
     assert(t.stuff.object["pet"].object["age"].integer == 5);
+
+
+    // Test that @extras member is not directly overwritten by JSON field with same name
+    static struct ExtrasTest {
+        int a, b, c;
+        @extras JSONValue!string extras1;
+    }
+    
+    // JSON that has both regular fields AND an "extras" field that should go into extras member
+    auto jsonExtraStr = `{"a": 1, "b": 2, "c": 3, "d": 4, "extras1": "foo"}`;
+
+    auto oldResult = deserialize!ExtrasTest(jsonExtraStr);
+    assert(oldResult.a == 1);
+    assert(oldResult.b == 2);
+    assert(oldResult.c == 3);
+    assert(oldResult.extras1.type == JSONType.Obj);
+    assert(oldResult.extras1.object.length == 2);
+    // The unknown field "d" should be in extras
+    assert("d" in oldResult.extras1.object);
+    assert(oldResult.extras1.object["d"].type == JSONType.Integer);
+    assert(oldResult.extras1.object["d"].integer == 4);
+    // The "extras" field from JSON should ALSO be in the extras member (not overwrite it)
+    assert("extras1" in oldResult.extras1.object);
+    assert(oldResult.extras1.object["extras1"].type == JSONType.String);
+    assert(oldResult.extras1.object["extras1"].str == "foo");
+
+    
+    auto result = deserializeWithPolicy!ExtrasTest(jsonExtraStr);
+
+    // Verify regular fields are set correctly
+    assert(result.a == 1);
+    assert(result.b == 2); 
+    assert(result.c == 3);
+    
+    // Verify extras member contains the unknown field "d" AND the "extras" field
+    assert(result.extras1.type == JSONType.Obj);
+    assert(result.extras1.object.length == 2);
+    
+    // The unknown field "d" should be in extras
+    assert("d" in result.extras1.object);
+    assert(result.extras1.object["d"].type == JSONType.Integer);
+    assert(result.extras1.object["d"].integer == 4);
+    
+    // The "extras" field from JSON should ALSO be in the extras member (not overwrite it)
+    assert("extras1" in result.extras1.object);
+    assert(result.extras1.object["extras1"].type == JSONType.String);
+    assert(result.extras1.object["extras1"].str == "foo");
+    
+
 }
 
 unittest
