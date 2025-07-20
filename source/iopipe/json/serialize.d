@@ -1184,7 +1184,9 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
             break;
         }
 
-        jsonItem = tokenizer.nextSignificant(); // consume the comma
+        // verify and consume the comma
+        jsonItem = tokenizer.nextSignificant()
+                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
 
         static if (tokenizer.config.JSON5)
         {
@@ -1237,7 +1239,9 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
             break;
         }
 
-        jsonItem = tokenizer.nextSignificant(); // consume the comma
+        // verify and consume the comma
+        jsonItem = tokenizer.nextSignificant()
+                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
 
         static if (tokenizer.config.JSON5)
         {
