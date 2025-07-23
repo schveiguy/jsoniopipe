@@ -33,7 +33,7 @@ import std.format;
 
 struct DefaultDeserializationPolicy {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
-    
+
     // Handles a field (returns true if handled)
     void onField(JT, T, size_t N)(
         ref JT tokenizer, 
@@ -46,7 +46,6 @@ struct DefaultDeserializationPolicy {
             tokenizer.releaseParsed();
         }
     }
-    
 }
 
 private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
@@ -114,7 +113,6 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
                     visited[i] = true; // Mark as visited 
                     return;  // ← IMPORTANT: Returns immediately!
                 }
-              
             }
         }
 
@@ -152,10 +150,9 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
             throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
         }
     }
-    
 }
 
-private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ref ubyte unused)
+private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ubyte unused)
 {   
     static if(__traits(isStaticArray, T))
     {
@@ -163,10 +160,19 @@ private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item
         if (idx >= T.length) {
             throw new JSONIopipeException(format("Array index %s out of bounds for static array of length %s", idx, T.length));
         }
-    }
 
-    // Deserialize the item at the given index
-    deserializeItem(policy, tokenizer, item[idx]);
+        // Deserialize the item at the given index
+        deserializeItem(policy, tokenizer, item[idx]);
+    }
+    else // output range? support appender only for now
+    {
+        typeof(item[][0]) newElem;
+        // Deserialize the item at the given index
+        deserializeItem(policy, tokenizer, newElem);
+
+        // append to the output range
+        item.put(newElem);
+    }
 }
 
 private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
@@ -184,10 +190,9 @@ private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref
             throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
         }
     }
-    
 }
 
-private void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ref ubyte unused) 
+private void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused) 
 {
     static if(__traits(isStaticArray, T))
     {
@@ -1145,20 +1150,16 @@ unittest
     assert(cArr.length == 3);
 }
 
-private void deserializeImplWithPolicy(T, JT, Policy)(
+void deserializeObject(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
     ref T item,
-) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+)
 {
-    
-    
     // Begin deserialization
-    auto context = policy.onObjectBegin(tokenizer, item);
-
-            
     tokenizer.nextSignificant
         .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+    auto context = policy.onObjectBegin(tokenizer, item);
 
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
@@ -1174,7 +1175,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
             jsonItem = tokenizer.nextSignificant();
             continue;
         }
-        
+
         // Validate key
         static if(tokenizer.config.JSON5)
         {
@@ -1183,49 +1184,55 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
         }
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        
+
         // Get field name
         auto nameItem = jsonItem;
         string key = nameItem.data(tokenizer.chain).to!string;
-        
+
         // Expect colon
         jsonItem = tokenizer.nextSignificant()
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
-        
+
         // Let the policy handle this field
         policy.onField(tokenizer, item, key, context);
-        
+
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
         {
             // If we hit the end of the object, break
             break;
         }
-            
+
         jsonItem = tokenizer.nextSignificant();
     }
-    
+
     // End deserialization
     policy.onObjectEnd(tokenizer, item, context);
-
     tokenizer.nextSignificant
         .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
-        
 }
 
 private void deserializeImplWithPolicy(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
-    ref T item
-) if (__traits(isStaticArray, T))
+    ref T item,
+) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
-    auto context = onArrayBegin(policy, tokenizer, item);
+    deserializeObject(policy, tokenizer, item);
+}
+
+void deserializeArray(T, JT, Policy)(
+    ref Policy policy,
+    ref JT tokenizer,
+    ref T item
+)
+{
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+    auto context = onArrayBegin(policy, tokenizer, item);
 
     // Parse array elements
     size_t elementCount = 0;
     while(true) {
-         
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
 
@@ -1246,11 +1253,20 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
 
     }
 
-    policy.onArrayEnd(tokenizer, item, elementCount, context);
-
     // verify we got an end array element
     jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+
+    policy.onArrayEnd(tokenizer, item, elementCount, context);
+}
+
+private void deserializeImplWithPolicy(T, JT, Policy)(
+    ref Policy policy,
+    ref JT tokenizer,
+    ref T item
+) if (__traits(isStaticArray, T))
+{
+    deserializeArray(policy, tokenizer, item);
 }
 
 private void deserializeImplWithPolicy(T, JT, Policy)(
@@ -1259,57 +1275,15 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref T item
 ) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
-    // Deserialize dynamic arrays with a policy
-    auto context = onArrayBegin(policy, tokenizer, item);
-    
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-
     import std.array : Appender;
+    // Deserialize into an appender
     auto app = Appender!T();
 
-    // Parse array elements
-    size_t elementCount = 0;
-    while(true) {
-        // Add a default element to the array so we can deserialize into it
-        app ~= typeof(item[0]).init;
-        
-        // Create a temporary array that includes this new element
-        auto tempArray = app.data;
+    deserializeArray(policy, tokenizer, app);
 
-        policy.onArrayElement(tokenizer, tempArray, elementCount, context);
-        
-        // Update our appender with the modified last element
-        app.data[elementCount] = tempArray[elementCount];
-        
-        elementCount++;
-
-        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
-            // If we hit the end of the array, break
-            break;
-        }
-
-        // verify and consume the comma
-        jsonItem = tokenizer.nextSignificant()
-                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
-
-        static if (tokenizer.config.JSON5)
-        {
-            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
-                break;
-        }
-    }
-
-    // Fill in the data.
-    item = app.data;
-    policy.onArrayEnd(tokenizer, item, elementCount, context);
-
-    // verify we got an end array element
-    jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+    // store the appender data into the actual item
+    item = app[];
 }
-
-
 
 unittest
 {
@@ -1332,12 +1306,12 @@ unittest
     // Test handling of JSON arrays with extra elements
     auto jsonWithExtra = `[1, 2, 3, 4, 5]`;  // Has 5 elements
     int[3] smallerArray;  // Only has space for 3 elements
-    
+
     // This should throw an exception - can't deserialize more elements than array size
     assertThrown!JSONIopipeException(
         deserializeWithPolicy!(int[3])(jsonWithExtra)
     );
-    
+
     auto json5WithTrailingComma = `[1, 2, 3,]`; // JSON5 allows trailing commas
     int[3] trailingCommaArray;
     auto json5Tokenizer = json5WithTrailingComma.jsonTokenizer!(ParseConfig(false,true, false, false));
@@ -1345,8 +1319,6 @@ unittest
     assert(trailingCommaArray[0] == 1);
     assert(trailingCommaArray[1] == 2);
     assert(trailingCommaArray[2] == 3);
-    
-    
 }
 
 
@@ -1354,7 +1326,7 @@ unittest
 {
     // Test deserializing DateTime with a custom policy
     import std.datetime.date;
-    
+
     static struct DTStringPolicy {
         void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
             auto jsonItem = tokenizer.nextSignificant
@@ -1362,7 +1334,7 @@ unittest
             item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
         }
     }
-    
+
     auto policy = DTStringPolicy();
     auto jsonStr = `["2001-Jan-01 12:00:00", "2002-Feb-15 13:30:45", "2003-Mar-20 14:15:30"]`;
     DateTime[3] dates;
@@ -1415,7 +1387,7 @@ unittest
     Person[] p;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
     static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
-    
+
     // Deserialize with policy
     auto persons = deserializeWithPolicy!(Person[])(jsonStr);
     assert(persons.length == 2);
@@ -1546,7 +1518,7 @@ unittest
         string name;
         int age;
     }
-    
+
     struct Person {
         string firstName;
         string lastName;
@@ -1614,7 +1586,6 @@ unittest
         @extras JSONValue!string stuff;
     }
 
-   
     auto jsonStr = `{
         "name": "valid", 
         "a": "another string", 
@@ -1652,7 +1623,7 @@ unittest
         int a, b, c;
         @extras JSONValue!string extras1;
     }
-    
+
     // JSON that has both regular fields AND an "extras" field that should go into extras member
     auto jsonExtraStr = `{"a": 1, "b": 2, "c": 3, "d": 4, "extras1": "foo"}`;
 
@@ -1671,29 +1642,26 @@ unittest
     assert(oldResult.extras1.object["extras1"].type == JSONType.String);
     assert(oldResult.extras1.object["extras1"].str == "foo");
 
-    
     auto result = deserializeWithPolicy!ExtrasTest(jsonExtraStr);
 
     // Verify regular fields are set correctly
     assert(result.a == 1);
     assert(result.b == 2); 
     assert(result.c == 3);
-    
+
     // Verify extras member contains the unknown field "d" AND the "extras" field
     assert(result.extras1.type == JSONType.Obj);
     assert(result.extras1.object.length == 2);
-    
+
     // The unknown field "d" should be in extras
     assert("d" in result.extras1.object);
     assert(result.extras1.object["d"].type == JSONType.Integer);
     assert(result.extras1.object["d"].integer == 4);
-    
+
     // The "extras" field from JSON should ALSO be in the extras member (not overwrite it)
     assert("extras1" in result.extras1.object);
     assert(result.extras1.object["extras1"].type == JSONType.String);
     assert(result.extras1.object["extras1"].str == "foo");
-    
-
 }
 
 unittest
@@ -1705,25 +1673,25 @@ unittest
         string name;
         int age;
     }
-    
+
     // JSON with extra "type" field that doesn't exist in our struct
     auto jsonWithExtra = `{"name": "John", "age": 30, "type": "customer"}`;
-    
+
     // This should throw an exception for the unknown "type" field
     assertThrown!JSONIopipeException(
         deserialize!(PersonNoIgnore)(jsonWithExtra)
     );
-    
+
     // Second test: With @ignoredMembers - should work fine
     @ignoredMembers("type")
     static struct PersonWithIgnore {
         string name;
         int age;
     }
-    
+
     // Same JSON with the extra field
     auto person = deserialize!(PersonWithIgnore)(jsonWithExtra);
-    
+
     // Verify the deserialization worked correctly
     assert(person.name == "John");
     assert(person.age == 30);
@@ -2321,7 +2289,7 @@ unittest
         assert(s2.obj1.d == real.infinity);
         assert(s2.obj1.e == -0x42);
         assert(s2.arr == ["abc", "def"]);
-        
+
         // test with policy
         auto tokenizerWithPolicy = jsonStr.jsonTokenizer!config;
         auto s2WithPolicy = tokenizerWithPolicy.deserializeWithPolicy!S2;
