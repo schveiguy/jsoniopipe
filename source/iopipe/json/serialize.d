@@ -73,6 +73,11 @@ private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     return visited;
 }
 
+private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
+{
+    return ubyte.init;
+}
+
 private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, string key, ref bool[N] visited) {
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
@@ -150,6 +155,20 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     
 }
 
+private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ref ubyte unused)
+{   
+    static if(__traits(isStaticArray, T))
+    {
+        // Check bounds explicitly
+        if (idx >= T.length) {
+            throw new JSONIopipeException(format("Array index %s out of bounds for static array of length %s", idx, T.length));
+        }
+    }
+
+    // Deserialize the item at the given index
+    deserializeItem(policy, tokenizer, item[idx]);
+}
+
 private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
@@ -166,6 +185,17 @@ private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref
         }
     }
     
+}
+
+private void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ref ubyte unused) 
+{
+    static if(__traits(isStaticArray, T))
+    {
+        if(T.length != length) // didn't serialize all elements
+        {
+            throw new JSONIopipeException(format("Expected array of length %s for type `%s`, but only got length %s", T.length, T.stringof, length));
+        }
+    }
 }
 
 // define some UDAs to affect serialization
@@ -1182,8 +1212,224 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
         
 }
 
+private void deserializeImplWithPolicy(T, JT, Policy)(
+    ref Policy policy,
+    ref JT tokenizer,
+    ref T item
+) if (__traits(isStaticArray, T))
+{
+    auto context = onArrayBegin(policy, tokenizer, item);
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+
+    // Parse array elements
+    size_t elementCount = 0;
+    while(true) {
+         
+        policy.onArrayElement(tokenizer, item, elementCount, context);
+        elementCount++;
+
+        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
+            // If we hit the end of the array, break
+            break;
+        }
+
+        // verify and consume the comma
+        jsonItem = tokenizer.nextSignificant()
+                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
+
+        static if (tokenizer.config.JSON5)
+        {
+            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
+                break;
+        }
+
+    }
+
+    policy.onArrayEnd(tokenizer, item, elementCount, context);
+
+    // verify we got an end array element
+    jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+}
+
+private void deserializeImplWithPolicy(T, JT, Policy)(
+    ref Policy policy,
+    ref JT tokenizer,
+    ref T item
+) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+{
+    // Deserialize dynamic arrays with a policy
+    auto context = onArrayBegin(policy, tokenizer, item);
+    
+    auto jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+
+    import std.array : Appender;
+    auto app = Appender!T();
+
+    // Parse array elements
+    size_t elementCount = 0;
+    while(true) {
+        // Add a default element to the array so we can deserialize into it
+        app ~= typeof(item[0]).init;
+        
+        // Create a temporary array that includes this new element
+        auto tempArray = app.data;
+
+        policy.onArrayElement(tokenizer, tempArray, elementCount, context);
+        
+        // Update our appender with the modified last element
+        app.data[elementCount] = tempArray[elementCount];
+        
+        elementCount++;
+
+        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
+            // If we hit the end of the array, break
+            break;
+        }
+
+        // verify and consume the comma
+        jsonItem = tokenizer.nextSignificant()
+                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
+
+        static if (tokenizer.config.JSON5)
+        {
+            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
+                break;
+        }
+    }
+
+    // Fill in the data.
+    item = app.data;
+    policy.onArrayEnd(tokenizer, item, elementCount, context);
+
+    // verify we got an end array element
+    jsonItem = tokenizer.nextSignificant
+        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
+}
+
+
+
+unittest
+{
+    // Test a simple staticArray with a default policy
+    auto jsonStr = `[1, 2, 3]`;
+    int[3] arr; 
+    arr = deserializeWithPolicy!(int[3])(jsonStr);
+
+    assert(arr[0] == 1);
+    assert(arr[1] == 2);
+    assert(arr[2] == 3);
+
+    // verify deserialize item with policy compiles as expected
+    auto policy = DefaultDeserializationPolicy();
+    int[3] p;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
+
+    import std.exception;
+    // Test handling of JSON arrays with extra elements
+    auto jsonWithExtra = `[1, 2, 3, 4, 5]`;  // Has 5 elements
+    int[3] smallerArray;  // Only has space for 3 elements
+    
+    // This should throw an exception - can't deserialize more elements than array size
+    assertThrown!JSONIopipeException(
+        deserializeWithPolicy!(int[3])(jsonWithExtra)
+    );
+    
+    auto json5WithTrailingComma = `[1, 2, 3,]`; // JSON5 allows trailing commas
+    int[3] trailingCommaArray;
+    auto json5Tokenizer = json5WithTrailingComma.jsonTokenizer!(ParseConfig(false,true, false, false));
+    trailingCommaArray = deserializeWithPolicy!(int[3])(json5Tokenizer);
+    assert(trailingCommaArray[0] == 1);
+    assert(trailingCommaArray[1] == 2);
+    assert(trailingCommaArray[2] == 3);
+    
+    
+}
+
+
+unittest
+{
+    // Test deserializing DateTime with a custom policy
+    import std.datetime.date;
+    
+    static struct DTStringPolicy {
+        void deserializeImpl(JT)(ref JT tokenizer, ref DateTime item) {
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing DateTime");
+            item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+        }
+    }
+    
+    auto policy = DTStringPolicy();
+    auto jsonStr = `["2001-Jan-01 12:00:00", "2002-Feb-15 13:30:45", "2003-Mar-20 14:15:30"]`;
+    DateTime[3] dates;
+    dates = deserializeWithPolicy!(DateTime[3])(jsonStr, policy);
+
+    assert(dates[0] == DateTime(2001, 1, 1, 12, 0, 0));
+    assert(dates[1] == DateTime(2002, 2, 15, 13, 30, 45));
+    assert(dates[2] == DateTime(2003, 3, 20, 14, 15, 30));
+
+     static struct Worker {
+        string name;
+        int age;
+        DateTime[3] workSchedule;  // Array of work datetime entries
+    }
+
+    auto jsonWorker = `{
+        "name": "Alice Smith",
+        "age": 32,
+        "workSchedule": [
+            "2023-Jun-15 09:00:00",
+            "2023-Jun-16 09:30:00", 
+            "2023-Jun-17 08:45:00"
+        ]
+    }`;
+
+    auto worker = deserializeWithPolicy!Worker(jsonWorker, policy);
+    assert(worker.name == "Alice Smith");
+    assert(worker.age == 32);
+    assert(worker.workSchedule[0] == DateTime(2023, 6, 15, 9, 0, 0));
+    assert(worker.workSchedule[1] == DateTime(2023, 6, 16, 9, 30, 0));
+    assert(worker.workSchedule[2] == DateTime(2023, 6, 17, 8, 45, 0));
+}
+
+unittest
+{ 
+    // simple dynamic array test with policy
+    static struct Person {
+        string name;
+        int age;
+    }
+
+
+    auto jsonStr = `[
+        {"name": "Alice", "age": 30},
+        {"name": "Bob", "age": 25}
+    ]`;
+
+    // verify deserialize item with policy compiles as expected
+    auto policy = DefaultDeserializationPolicy();
+    Person[] p;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
+    
+    // Deserialize with policy
+    auto persons = deserializeWithPolicy!(Person[])(jsonStr);
+    assert(persons.length == 2);
+    assert(persons[0].name == "Alice");
+    assert(persons[0].age == 30);
+    assert(persons[1].name == "Bob");
+    assert(persons[1].age == 25);
+}
+
+
+
 // entry point for deserializing any specified type
 void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
+    // pragma(msg, "deserializeItem called with T = ", T);
     static if(__traits(compiles, policy.deserializeImpl(tokenizer, item))) {
         policy.deserializeImpl(tokenizer, item);
     }
@@ -2085,8 +2331,6 @@ unittest
         assert(s2WithPolicy.obj1.d == real.infinity);
         assert(s2WithPolicy.obj1.e == -0x42);
         assert(s2WithPolicy.arr == ["abc", "def"]);
-
-
     }}
 } 
 
