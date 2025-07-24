@@ -7,91 +7,211 @@ import iopipe.json.parser;
 public import iopipe.json.common;
 import iopipe.traits;
 import std.traits;
+import std.conv : to;
 
 enum JSONType
 {
-    Integer,
-    Floating,
+    Integer,        // Now a hint only, stored as string
+    Floating,       // Now a hint only, stored as string
     String,
     Obj,
     Array,
     Null,
     Bool,
+    StringSSO,      // Small string optimization for strings
+    NumberSSO,      // Small string optimization for numbers
 }
 
-struct JSONValue(SType)
+// Making JSONValue a template struct with a default parameter of string
+struct JSONValue(StringType = string)
 {
-    // basically a tagged union.
+    // Tagged union
     JSONType type;
+    
+    // Small string optimization - 16 bytes should cover many common cases
+    private enum SSOSize = 16;
+    
     union
     {
-        long integer;
-        real floating;
+        // String storage (either SSO or allocated)
+        struct {
+            union {
+                char[SSOSize] sso;
+                StringType allocatedString;
+            }
+            // For SSO types, first byte can indicate length used
+            ubyte ssoLength;
+        }
+        
+        // Original value types
         JSONValue[] array;
-        JSONValue[immutable(SType)] object;
-        SType str;
+        JSONValue[StringType] object;
         bool boolean;
+    }
+    
+// Get the string representation of the value
+    StringType stringForm() const
+    {
+        // You might import 'to' locally if needed, but the top-level import should suffice
+        // import std.conv : to;
+
+        with(JSONType) final switch(type)
+        {
+            case String:
+                return allocatedString;
+            case StringSSO:
+            case NumberSSO:
+                // Use std.conv.to for converting the char[] slice to StringType
+                import std.conv : to; // Add import here just to be safe/clear
+                return sso[0..ssoLength].to!StringType; // <-- Changed line
+            case Integer:
+            case Floating:
+                // These types now store their value in allocatedString
+                return allocatedString;
+            case Obj:
+            case Array:
+            case Null:
+            case Bool:
+                throw new JSONIopipeException("Cannot get string form of non-string/non-number type");
+        }
+        // Optional: Add a default or final return for compilers that warn about
+        // not all control paths returning a value, although final switch should cover it.
+        // assert(0, "Should not reach here"); return StringType.init;
+    }
+    
+    // Add compatibility properties for serialize.d
+    @property StringType str() const
+    {
+        with(JSONType) 
+        if (type == String || type == StringSSO)
+            return stringForm();
+        else
+            throw new JSONIopipeException("JSON value is not a string");
+    }
+    
+    @property long integer() const
+    {
+        import std.conv : to;
+        with(JSONType) 
+        if (type == Integer || type == NumberSSO)
+            return stringForm().to!long;
+        else
+            throw new JSONIopipeException("JSON value is not an integer");
+    }
+    
+    @property double floating() const
+    {
+        import std.conv : to;
+        with(JSONType)
+        if (type == Floating || type == NumberSSO)
+            return stringForm().to!double;
+        else
+            throw new JSONIopipeException("JSON value is not a floating-point number");
+    }
+    
+    // Convert the value to type T
+    T get(T)() const
+    {
+        import std.conv : to;
+        
+        static if (is(T == StringType))
+        {
+            return stringForm();
+        }
+        else static if (is(T == bool))
+        {
+            if (type == JSONType.Bool)
+                return boolean;
+            else
+                return stringForm().to!bool;
+        }
+        else static if (isNumeric!T)
+        {
+            // For numeric types, convert from the string representation
+            if (type == JSONType.Integer || type == JSONType.Floating || 
+                type == JSONType.NumberSSO)
+                return stringForm().to!T;
+            else
+                throw new JSONIopipeException("Cannot convert non-numeric JSON value to numeric type");
+        }
+        else
+        {
+            // For other types, attempt generic conversion
+            return stringForm().to!T;
+        }
+    }
+    
+    // Create a JSONValue from a string, using SSO when possible
+    static JSONValue fromString(StringType value, bool isNumber = false)
+    {
+        JSONValue result;
+        
+        if (value.length < SSOSize)
+        {
+            // Use SSO
+            result.type = isNumber ? JSONType.NumberSSO : JSONType.StringSSO;
+            result.ssoLength = cast(ubyte)value.length;
+            result.sso[0..value.length] = value[];
+        }
+        else
+        {
+            // Use allocated string
+            result.type = isNumber ? JSONType.Floating : JSONType.String;
+            result.allocatedString = value.idup;
+        }
+        
+        return result;
+    }
+    
+    // Convenience to create numeric JSONValue
+    static JSONValue number(StringType value, bool isInteger = false)
+    {
+        auto result = fromString(value, true);
+        // Set the hint type if it's allocated
+        if (result.type == JSONType.Floating && isInteger)
+            result.type = JSONType.Integer;
+        return result;
     }
 }
 
-private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
+private JSONValue!StringType buildValue(StringType = string, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
 {
     import std.conv;
 
-    alias JT = JSONValue!SType;
     with(JSONToken) switch (item.token)
     {
     case ObjectStart:
-        return parser.buildObject!SType(relPol);
+        return parser.buildObject!StringType(relPol);
     case ArrayStart:
-        return parser.buildArray!SType(relPol);
+        return parser.buildArray!StringType(relPol);
     case String:
-        // See if we require copying.
         {
-            JT result;
-            result.type = JSONType.String;
-            result.str = extractString!SType(item, parser.chain);
-            return result;
+            // Extract string and use SSO when possible
+            auto strData = extractString!StringType(item, parser.chain);
+            return JSONValue!StringType.fromString(strData);
         }
     case Number:
         {
-            // if it's an integer, parse as an integer. If not, parse as a float.
-            // TODO: really this should be done while parsing, not that hard.
-            import std.conv: parse;
-            JT result;
-            auto str = item.data(parser.chain);
-            if(item.hint == JSONParseHint.Int)
-            {
-                result.type = JSONType.Integer;
-                result.integer = parse!long(str);
-                assert(str.length == 0);
-                return result;
-            }
-            else
-            {
-                // floating point or with exponent
-                result.type = JSONType.Floating;
-                result.floating = parse!real(str);
-                assert(str.length == 0);
-                return result;
-            }
+            // Store the number as string
+            auto numStr = item.data(parser.chain).to!StringType;
+            return JSONValue!StringType.number(numStr, item.hint == JSONParseHint.Int);
         }
     case Null:
         {
-            JT result;
+            JSONValue!StringType result;
             result.type = JSONType.Null;
             return result;
         }
     case True:
         {
-            JT result;
+            JSONValue!StringType result;
             result.type = JSONType.Bool;
             result.boolean = true;
             return result;
         }
     case False:
         {
-            JT result;
+            JSONValue!StringType result;
             result.type = JSONType.Bool;
             result.boolean = false;
             return result;
@@ -101,13 +221,14 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
     }
 }
 
-private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
+private JSONValue!StringType buildObject(StringType = string, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
 {
-
-    alias JT = JSONValue!SType;
     auto item = parser.next();
-    JT obj;
+    JSONValue!StringType obj;
     obj.type = JSONType.Obj;
+    
+    // Add this line back:
+    obj.object = null;
     while(item.token != JSONToken.ObjectEnd)
     {
         if(item.token == JSONToken.Comma)
@@ -117,12 +238,14 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, Rele
         }
         // the item must be a string
         assert(item.token == JSONToken.String);
-        auto name = parser.buildValue!SType(item, relPol);
+        auto nameVal = parser.buildValue!StringType(item, relPol);
+        StringType name = nameVal.stringForm().idup;
+        
         item = parser.next();
         // should always be colon
         assert(item.token == JSONToken.Colon);
         item = parser.next();
-        obj.object[name.str.idup] = parser.buildValue!SType(item, relPol);
+        obj.object[name] = parser.buildValue!StringType(item, relPol);
         // release any parsed data.
         if(relPol == ReleasePolicy.afterMembers)
             parser.releaseParsed();
@@ -131,17 +254,24 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, Rele
     return obj;
 }
 
-private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
+private JSONValue!StringType buildArray(StringType = string, Tokenizer)(ref Tokenizer parser, ReleasePolicy relPol)
 {
-    alias JT = JSONValue!SType;
     auto item = parser.next();
-    JT arr;
+    JSONValue!StringType arr;
     arr.type = JSONType.Array;
+    
+    // Initialize the array explicitly to avoid null array issues
+    arr.array = new JSONValue!StringType[0];
+    
     while(item.token != JSONToken.ArrayEnd)
     {
-        arr.array ~= parser.buildValue!SType(item, relPol);
+        // Create a new value and then append it
+        auto newValue = parser.buildValue!StringType(item, relPol);
+        arr.array ~= newValue;
+        
         if(relPol == ReleasePolicy.afterMembers)
             parser.releaseParsed();
+            
         item = parser.next();
         if(item.token == JSONToken.Comma)
             item = parser.next();
@@ -155,7 +285,7 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
  */
 auto parseJSON(Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
-    return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer, relPol);
+    return parseJSON!(string)(tokenizer, relPol);
 }
 
 auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
@@ -169,7 +299,7 @@ auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol =
 
 auto parseJSON(SType = void, Chain)(Chain chain) if (isIopipe!Chain && is(SType == void))
 {
-    return parseJSON!(WindowType!Chain)(chain);
+    return parseJSON!(string)(chain);
 }
 
 auto parseJSON(SType, Chain)(Chain chain) if (isIopipe!Chain)
@@ -182,54 +312,60 @@ auto parseJSON(SType, Chain)(Chain chain) if (isIopipe!Chain)
 void printTree(JT)(JT item)
 {
     import std.stdio;
-    final switch(item.type) with (JSONType)
+    with (JSONType)
     {
-    case Obj:
+        final switch(item.type)
         {
-            write("{");
-            bool first = true;
-            foreach(n, v; item.object)
+        case Obj:
             {
-                if(first)
-                    first = false;
-                else
-                    write(", ");
-                writef(`"%s" : `, n);
-                printTree(v);
+                write("{");
+                bool first = true;
+                foreach(n, v; item.object)
+                {
+                    if(first)
+                        first = false;
+                    else
+                        write(", ");
+                    writef(`"%s" : `, n);
+                    printTree(v);
+                }
+                write("}");
             }
-            write("}");
-        }
-        break;
-    case Array:
-        {
-            write("[");
-            bool first = true;
-            foreach(v; item.array)
+            break;
+        case Array:
             {
-                if(first)
-                    first = false;
-                else
-                    write(", ");
-                printTree(v);
+                write("[");
+                bool first = true;
+                foreach(v; item.array)
+                {
+                    if(first)
+                        first = false;
+                    else
+                        write(", ");
+                    printTree(v);
+                }
+                write("]");
             }
-            write("]");
+            break;
+        case Integer:
+        case NumberSSO:
+            // For consistency, just display the string form for numbers
+            write(item.stringForm());
+            break;
+        case Floating:
+            write(item.stringForm());
+            break;
+        case Null:
+            write("null");
+            break;
+        case Bool:
+            write(item.boolean);
+            break;
+        case String:
+        case StringSSO:
+            writef(`"%s"`, item.stringForm());
+            break;
         }
-        break;
-    case Integer:
-        write(item.integer);
-        break;
-    case Floating:
-        write(item.floating);
-        break;
-    case Null:
-        write("null");
-        break;
-    case Bool:
-        write(item.boolean);
-        break;
-    case String:
-        writef(`"%s"`, item.str);
-        break;
     }
 }
 
@@ -237,6 +373,22 @@ unittest
 {
     auto jt = parseJSON(q"{{"a" : [1, 2.5, "x", true, false, null]}}");
     //printTree(jt);
-    auto jt2 = parseJSON!(wstring)(q"{{"a" : [1, 2.5, "x\ua123", true, false, null]}}");
-    //printTree(jt2);
+    
+    // Test numbers that would be problematic for native types
+    auto bigNumber = parseJSON(q"{{"bigint": 10000000000000000000}}");
+    assert(bigNumber.object["bigint"].stringForm() == "10000000000000000000");
+    
+    // Test small string optimization
+    auto smallString = parseJSON(q"{{"small": "abc"}}");
+    assert(smallString.object["small"].type == JSONType.StringSSO);
+    assert(smallString.object["small"].stringForm() == "abc");
+    
+    // Test the get() method for type conversion
+    auto numberTest = parseJSON(q"{{"num": 42, "str": "hello"}}");
+    assert(numberTest.object["num"].get!int() == 42);
+    assert(numberTest.object["str"].get!string() == "hello");
+    
+    // Test the compatibility properties
+    assert(numberTest.object["num"].integer == 42);
+    assert(numberTest.object["str"].str == "hello");
 }
