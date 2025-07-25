@@ -384,34 +384,6 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
-{
-    import std.stdio : writeln;
-    writeln("OLD Deserializing static array...");
-
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-
-    bool first = true;
-    foreach(ref elem; item)
-    {
-        if(!first)
-        {
-            // verify there's a comma
-            jsonItem = tokenizer.nextSignificant
-                .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
-        }
-        first = false;
-        deserializeImpl(tokenizer, elem, relPol);
-        if(relPol == ReleasePolicy.afterMembers)
-            tokenizer.releaseParsed();
-    }
-
-    // verify we got an end array element
-    jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayEnd, "Parsing " ~ T.stringof);
-}
-
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy pol) if (is(T == enum))
 {
     // enums are special, we can serialize them based on the enum name, or the
@@ -427,50 +399,6 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
             .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
         item = jsonItem.data(tokenizer.chain).to!T;
     }
-}
-
-// TODO: should deal with writable input ranges and output ranges
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{
-    import std.stdio : writeln;
-    writeln("OLD Deserializing dynamic array...");
-
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-
-    import std.array : Appender;
-    auto app = Appender!T();
-
-    // check for an empty array (special case)
-    if(tokenizer.peek == JSONToken.ArrayEnd)
-    {
-        // parse it off
-        jsonItem = tokenizer.nextSignificant;
-        // nothing left to do
-        return;
-    }
-    // parse items and commas until we get an array end.
-    while(true)
-    {
-        typeof(item[0]) elem;
-        deserializeImpl(tokenizer, elem, relPol);
-        app ~= elem;
-        if(relPol == ReleasePolicy.afterMembers)
-            tokenizer.releaseParsed();
-        jsonItem = tokenizer.nextSignificant;
-        if(jsonItem.token == JSONToken.ArrayEnd)
-            break;
-        jsonExpect(jsonItem, JSONToken.Comma, "Parsing " ~ T.stringof);
-        if(tokenizer.config.JSON5 && tokenizer.peekSignificant == JSONToken.ArrayEnd)
-        {
-            // was a trailing comma. parse the array end and break
-            tokenizer.next;
-            break;
-        }
-    }
-
-    // fill in the data.
-    item = app.data;
 }
 
 // Note, we don't test for string keys here, because the type might not be a
@@ -787,25 +715,6 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
-{
-    // check to see if any member is defined as the representation
-    import std.stdio : writeln;
-    writeln("OLD Deserializing STRUCT...");
-    alias representers = getSymbolsByUDA!(T, serializeAs);
-    static if(representers.length > 0)
-    {
-        static assert(representers.length == 1, "Only one field can be used to represent an object");
-        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])), relPol);
-    }
-    else
-    {
-        deserializeAllMembers(tokenizer, item, relPol);
-    }
-}
-
-
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
 {
     item = tokenizer.parseJSON!(typeof(T.str))(relPol);
@@ -871,45 +780,6 @@ unittest
     auto s = deserialize!S(`{"c" : null}`);
     assert(s.c is null);
 }
-
-
-
-/** Deserialize the given type from the JSON data.
- * Note that all arrays are also iopipes, so you can pass in a `string` for `c`.
- * Throws:
- *      JSONIopipeException on parser error.
- */
-
-/* 
-T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
-{
-    T result;
-    deserializeImpl(tokenizer, result, relPol);
-    return result;
-}
-
-/// ditto
-T deserialize(T, Chain)(auto ref Chain c) if (isIopipe!Chain)
-{
-    enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1])); // @suppress(dscanner.suspicious.auto_ref_assignment)
-    auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return tokenizer.deserialize!T(ReleasePolicy.afterMembers);
-}
-
-/// ditto
-void deserialize(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
-{
-    deserializeImpl(tokenizer, item, relPol);
-}
-
-/// ditto
-void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
-{
-    enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
-    auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
-}
-*/
 
 // TODO: this really is pure, but there is a cycle in the DOM parser so
 // compiler doesn't infer it.
@@ -1245,8 +1115,6 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     
-    import std.stdio : writeln;
-    writeln("NEW ***** Deserializing STRUCT...");
     // check to see if any member is defined as the representation
     alias representers = getSymbolsByUDA!(T, serializeAs);
     static if(representers.length > 0)
@@ -1306,8 +1174,6 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref T item
 ) if (__traits(isStaticArray, T))
 {
-    import std.stdio : writeln;
-    writeln("Deserializing static array with policy...");
     deserializeArray(policy, tokenizer, item);
 }
 
@@ -1316,10 +1182,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref JT tokenizer,
     ref T item
 ) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{
-    import std.stdio : writeln;
-    writeln("Deserializing dynamic array with policy...");
-    
+{   
     import std.array : Appender;
     // Deserialize into an appender
     auto app = Appender!T();
