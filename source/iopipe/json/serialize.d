@@ -216,11 +216,18 @@ struct IgnoredMembers { string[] ignoredMembers; }
 enum serializeAs;
 
 ///
+
 unittest {
     static struct T {
         @serializeAs string s;
         int x;
     }
+
+    auto jsonStr = `"hi"`;
+    auto policy = DefaultDeserializationPolicy();
+    T p;
+    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 
     T t = deserialize!(T)(`"hi"`);
     assert(t.s == "hi");
@@ -235,6 +242,7 @@ unittest {
 		    == "Parsing string: expected String, got ObjectStart"
 	    );
 }
+
 
 /**
  * UDA: Ignore the member when serializing a struct or class.
@@ -350,8 +358,8 @@ unittest {
 
     assert(t.serialize == `{"s" : "hi", "x" : 1}`);
 
-    deserializeWithPolicy!S(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown!JSONIopipeException;
-    auto tt = deserializeWithPolicy!T(`{"s" : "hi", "x": 1, "extra": "errors"}`);
+    deserialize!S(`{"s" : "hi", "x": 1, "extra": "errors"}`).assertThrown!JSONIopipeException;
+    auto tt = deserialize!T(`{"s" : "hi", "x": 1, "extra": "errors"}`);
     assert(tt.s == "hi");
     assert(tt.x == 1);
     assert(tt.serialize == `{"s" : "hi", "x" : 1}`);
@@ -378,6 +386,9 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (__traits(isStaticArray, T))
 {
+    import std.stdio : writeln;
+    writeln("OLD Deserializing static array...");
+
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
@@ -421,6 +432,9 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
 // TODO: should deal with writable input ranges and output ranges
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
+    import std.stdio : writeln;
+    writeln("OLD Deserializing dynamic array...");
+
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
 
@@ -773,9 +787,12 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
+
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
     // check to see if any member is defined as the representation
+    import std.stdio : writeln;
+    writeln("OLD Deserializing STRUCT...");
     alias representers = getSymbolsByUDA!(T, serializeAs);
     static if(representers.length > 0)
     {
@@ -787,6 +804,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         deserializeAllMembers(tokenizer, item, relPol);
     }
 }
+
 
 private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
 {
@@ -861,6 +879,8 @@ unittest
  * Throws:
  *      JSONIopipeException on parser error.
  */
+
+/* 
 T deserialize(T, JT)(ref JT tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
@@ -889,6 +909,7 @@ void deserialize(T, Chain)(auto ref Chain c, ref T item) if (isIopipe!Chain)
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
     return tokenizer.deserialize(item, ReleasePolicy.afterMembers);
 }
+*/
 
 // TODO: this really is pure, but there is a cycle in the DOM parser so
 // compiler doesn't infer it.
@@ -1081,7 +1102,7 @@ unittest
     }
 
     auto y = deserialize!Y(`{}`);
-
+        
     static struct T
     {
         @serializeAs string s;
@@ -1092,6 +1113,7 @@ unittest
     assert(arr.length == 2);
     assert(arr[0].s == "hi");
     assert(arr[1].s == "there");
+    
 }
 
 // test serializing of class hierarchy
@@ -1161,6 +1183,11 @@ void deserializeObject(T, JT, Policy)(
         .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
     auto context = policy.onObjectBegin(tokenizer, item);
 
+    if (tokenizer.peekSignificant() == JSONToken.ObjectEnd) {
+        tokenizer.nextSignificant
+          .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
+        return; // empty object, nothing to do
+    }
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
     while(true)
@@ -1217,7 +1244,20 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref T item,
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
-    deserializeObject(policy, tokenizer, item);
+    
+    import std.stdio : writeln;
+    writeln("NEW ***** Deserializing STRUCT...");
+    // check to see if any member is defined as the representation
+    alias representers = getSymbolsByUDA!(T, serializeAs);
+    static if(representers.length > 0)
+    {
+        static assert(representers.length == 1, "Only one field can be used to represent an object");
+        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])), policy.relPol);
+    }
+    else 
+    {    
+        deserializeObject(policy, tokenizer, item);
+    }
 }
 
 void deserializeArray(T, JT, Policy)(
@@ -1266,6 +1306,8 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref T item
 ) if (__traits(isStaticArray, T))
 {
+    import std.stdio : writeln;
+    writeln("Deserializing static array with policy...");
     deserializeArray(policy, tokenizer, item);
 }
 
@@ -1275,6 +1317,9 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     ref T item
 ) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
+    import std.stdio : writeln;
+    writeln("Deserializing dynamic array with policy...");
+    
     import std.array : Appender;
     // Deserialize into an appender
     auto app = Appender!T();
@@ -1290,7 +1335,7 @@ unittest
     // Test a simple staticArray with a default policy
     auto jsonStr = `[1, 2, 3]`;
     int[3] arr; 
-    arr = deserializeWithPolicy!(int[3])(jsonStr);
+    arr = deserialize!(int[3])(jsonStr);
 
     assert(arr[0] == 1);
     assert(arr[1] == 2);
@@ -1309,13 +1354,13 @@ unittest
 
     // This should throw an exception - can't deserialize more elements than array size
     assertThrown!JSONIopipeException(
-        deserializeWithPolicy!(int[3])(jsonWithExtra)
+        deserialize!(int[3])(jsonWithExtra)
     );
 
     auto json5WithTrailingComma = `[1, 2, 3,]`; // JSON5 allows trailing commas
     int[3] trailingCommaArray;
     auto json5Tokenizer = json5WithTrailingComma.jsonTokenizer!(ParseConfig(false,true, false, false));
-    trailingCommaArray = deserializeWithPolicy!(int[3])(json5Tokenizer);
+    trailingCommaArray = deserialize!(int[3])(json5Tokenizer);
     assert(trailingCommaArray[0] == 1);
     assert(trailingCommaArray[1] == 2);
     assert(trailingCommaArray[2] == 3);
@@ -1338,7 +1383,7 @@ unittest
     auto policy = DTStringPolicy();
     auto jsonStr = `["2001-Jan-01 12:00:00", "2002-Feb-15 13:30:45", "2003-Mar-20 14:15:30"]`;
     DateTime[3] dates;
-    dates = deserializeWithPolicy!(DateTime[3])(jsonStr, policy);
+    dates = deserialize!(DateTime[3])(jsonStr, policy);
 
     assert(dates[0] == DateTime(2001, 1, 1, 12, 0, 0));
     assert(dates[1] == DateTime(2002, 2, 15, 13, 30, 45));
@@ -1360,7 +1405,7 @@ unittest
         ]
     }`;
 
-    auto worker = deserializeWithPolicy!Worker(jsonWorker, policy);
+    auto worker = deserialize!Worker(jsonWorker, policy);
     assert(worker.name == "Alice Smith");
     assert(worker.age == 32);
     assert(worker.workSchedule[0] == DateTime(2023, 6, 15, 9, 0, 0));
@@ -1389,7 +1434,7 @@ unittest
     static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 
     // Deserialize with policy
-    auto persons = deserializeWithPolicy!(Person[])(jsonStr);
+    auto persons = deserialize!(Person[])(jsonStr);
     assert(persons.length == 2);
     assert(persons[0].name == "Alice");
     assert(persons[0].age == 30);
@@ -1420,7 +1465,7 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
 }
 
 
-void deserializeWithPolicy(T, JT, Policy)(
+void deserialize(T, JT, Policy)(
     ref JT tokenizer,
     ref T item,
     Policy policy
@@ -1429,60 +1474,60 @@ void deserializeWithPolicy(T, JT, Policy)(
     deserializeItem(policy, tokenizer, item);
 }
 
-T deserializeWithPolicy(T, JT, Policy)(
+T deserialize(T, JT, Policy)(
     ref JT tokenizer,
     Policy policy
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
-    deserializeWithPolicy(tokenizer, result, policy);
+    deserialize(tokenizer, result, policy);
     return result;
 }
 
-T deserializeWithPolicy(T, JT)(
+T deserialize(T, JT)(
     ref JT tokenizer,
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     auto policy = DefaultDeserializationPolicy();
-    return deserializeWithPolicy!T(tokenizer, policy);
+    return deserialize!T(tokenizer, policy);
 }
 
-void deserializeWithPolicy(T, JT)(
+void deserialize(T, JT)(
     ref JT tokenizer,
     ref T item
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     auto policy = DefaultDeserializationPolicy();
-    deserializeWithPolicy(tokenizer, item, policy);
+    deserialize(tokenizer, item, policy);
 }
 
-T deserializeWithPolicy(T, Chain)(
+T deserialize(T, Chain)(
     auto ref Chain c
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy!T(tokenizer);
+    return deserialize!T(tokenizer);
 }
 
-T deserializeWithPolicy(T, Policy, Chain)(
+T deserialize(T, Policy, Chain)(
     auto ref Chain c,
     Policy policy
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    return deserializeWithPolicy!T(tokenizer, policy);
+    return deserialize!T(tokenizer, policy);
 }
 
-void deserializeWithPolicy(T, Chain)(
+void deserialize(T, Chain)(
     auto ref Chain c,
     ref T item
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
     auto tokenizer = c.jsonTokenizer!(ParseConfig(shouldReplaceEscapes));
-    deserializeWithPolicy(tokenizer, item);
+    deserialize(tokenizer, item);
 }
 
 
@@ -1495,7 +1540,7 @@ unittest
         int age;
     }
     auto jsonStr = `{"firstName": "John", "lastName": "Doe", "age": 30}`;
-    auto person = deserializeWithPolicy!Person(jsonStr);
+    auto person = deserialize!Person(jsonStr);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
@@ -1535,7 +1580,7 @@ unittest
         }
     }`; 
 
-    auto person = deserializeWithPolicy!Person(jsonStr);
+    auto person = deserialize!Person(jsonStr);
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
@@ -1557,7 +1602,7 @@ unittest
     }
 
     auto pol = DTStringPolicy();
-    auto dt = deserializeWithPolicy!DateTime(`"2001-Jan-01 12:00:00"`, pol);
+    auto dt = deserialize!DateTime(`"2001-Jan-01 12:00:00"`, pol);
     assert(dt == DateTime(2001, 1, 1, 12, 0, 0));
 
     static struct Person {
@@ -1571,7 +1616,7 @@ unittest
         "age": 30,
         "dob" : "2001-Jan-01 12:00:00"
     }`;
-    auto p = deserializeWithPolicy!Person(jsonStr, pol);
+    auto p = deserialize!Person(jsonStr, pol);
     assert(p.name == "John Doe");
     assert(p.age == 30);
     assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));
@@ -1602,7 +1647,7 @@ unittest
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
     static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, tt)));
 
-    auto t = deserializeWithPolicy!T(jsonStr);
+    auto t = deserialize!T(jsonStr);
     assert(t.name == "valid");   
     assert(t.stuff.type == JSONType.Obj);
     assert(t.stuff.object["a"].type == JSONType.String);
@@ -1642,7 +1687,7 @@ unittest
     assert(oldResult.extras1.object["extras1"].type == JSONType.String);
     assert(oldResult.extras1.object["extras1"].str == "foo");
 
-    auto result = deserializeWithPolicy!ExtrasTest(jsonExtraStr);
+    auto result = deserialize!ExtrasTest(jsonExtraStr);
 
     // Verify regular fields are set correctly
     assert(result.a == 1);
@@ -2292,7 +2337,7 @@ unittest
 
         // test with policy
         auto tokenizerWithPolicy = jsonStr.jsonTokenizer!config;
-        auto s2WithPolicy = tokenizerWithPolicy.deserializeWithPolicy!S2;
+        auto s2WithPolicy = tokenizerWithPolicy.deserialize!S2;
         assert(s2WithPolicy.obj1.a.isClose(0.123));
         assert(s2WithPolicy.obj1.b == "str");
         assert(isNaN(s2WithPolicy.obj1.c));
