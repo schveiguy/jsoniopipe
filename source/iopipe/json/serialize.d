@@ -1195,11 +1195,7 @@ void deserializeObject(T, JT, Policy)(
         jsonItem = tokenizer.nextSignificant()
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 
-        // Using JSONItem when supported by the policy will save an allocation
-	static if(__traits(compiles, policy.onField(tokenizer, item, JSONItem.init, context)))
-            policy.onField(tokenizer, item, key, context);
-        else
-            policy.onField(tokenizer, item, key.data(tokenizer.chain).to!string, context);
+        policy.onField(tokenizer, item, key, context);
 
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
         {
