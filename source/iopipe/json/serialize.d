@@ -144,7 +144,7 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
         {
             // Need to copy the key from the volatile `chain` to an immutable string on the heap if it is to be used as an AA-key
             // accessing `key` is only safe if the tokenizer hasn't had a chance to release anything yet, which is true here.
-            auto keyPersistent = key.data(tokenizer.chain).to!string;
+            auto keyPersistent = key.data(tokenizer.chain).idup;
             // any extras should be put in here
             JSONValue!SType newItem;
             deserializeItem(policy, tokenizer, newItem);
