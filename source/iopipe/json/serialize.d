@@ -38,7 +38,7 @@ struct DefaultDeserializationPolicy {
     void onField(JT, T, size_t N)(
         ref JT tokenizer, 
         ref T item, 
-        string key,
+        JSONItem key,
         ref bool[N] visited
     ) {
         .onField(this, tokenizer, item, key, visited);
@@ -77,7 +77,7 @@ private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     return ubyte.init;
 }
 
-private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, string key, ref bool[N] visited) {
+private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref bool[N] visited) {
     static assert(N == SerializableMembers!T.length);
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
@@ -94,7 +94,7 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
     }
 
     // Check each member to see if it matches
-    switch(key)
+    switch(key.data(tokenizer.chain))
     {
         static foreach(i, memberName; members) {
             { // Add a block scope to contain each declaration, avoiding duplicate jsonName
@@ -139,15 +139,19 @@ private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T i
             tokenizer.skipItem();
             return; // Ignore unknown fields
         }
+
         static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
         {
+            // Need to copy the key from the volatile `chain` to an immutable string on the heap if it is to be used as an AA-key
+            // accessing `key` is only safe if the tokenizer hasn't had a chance to release anything yet, which is true here.
+            auto keyPersistent = key.data(tokenizer.chain).idup;
             // any extras should be put in here
             JSONValue!SType newItem;
             deserializeItem(policy, tokenizer, newItem);
-            __traits(getMember, item, extrasMember).object[key] = newItem;
+            __traits(getMember, item, extrasMember).object[keyPersistent] = newItem;
         } else {
             // If we get here, it's truly an unknown field
-            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key, T.stringof));
+            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data(tokenizer.chain), T.stringof));
         }
     }
 }
@@ -1185,15 +1189,12 @@ void deserializeObject(T, JT, Policy)(
         else
             jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
 
-        // Get field name
-        auto nameItem = jsonItem;
-        string key = nameItem.data(tokenizer.chain).to!string;
+        auto key = jsonItem;
 
         // Expect colon
         jsonItem = tokenizer.nextSignificant()
             .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
 
-        // Let the policy handle this field
         policy.onField(tokenizer, item, key, context);
 
         if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
