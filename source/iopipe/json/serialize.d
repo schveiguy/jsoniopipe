@@ -231,7 +231,7 @@ unittest {
     auto policy = DefaultDeserializationPolicy();
     T p;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, deserializeImpl(policy, tokenizer, p)));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 
     T t = deserialize!(T)(`"hi"`);
     assert(t.s == "hi");
@@ -1109,7 +1109,7 @@ void deserializeObject(T, JT, Policy)(
         .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
 }
 
-private void deserializeImpl(T, JT, Policy)(
+private void deserializeImplWithPolicy(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
     ref T item,
@@ -1169,7 +1169,7 @@ void deserializeArray(T, JT, Policy)(
     policy.onArrayEnd(tokenizer, item, elementCount, context);
 }
 
-private void deserializeImpl(T, JT, Policy)(
+private void deserializeImplWithPolicy(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
     ref T item
@@ -1178,7 +1178,7 @@ private void deserializeImpl(T, JT, Policy)(
     deserializeArray(policy, tokenizer, item);
 }
 
-private void deserializeImpl(T, JT, Policy)(
+private void deserializeImplWithPolicy(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
     ref T item
@@ -1209,7 +1209,7 @@ unittest
     auto policy = DefaultDeserializationPolicy();
     int[3] p;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, deserializeImpl(policy, tokenizer, p)));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 
     import std.exception;
     // Test handling of JSON arrays with extra elements
@@ -1295,7 +1295,7 @@ unittest
     auto policy = DefaultDeserializationPolicy();
     Person[] p;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, deserializeImpl(policy, tokenizer, p)));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 
     // Deserialize with policy
     auto persons = deserialize!(Person[])(jsonStr);
@@ -1314,8 +1314,8 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
     static if(__traits(compiles, policy.deserializeImpl(tokenizer, item))) {
         policy.deserializeImpl(tokenizer, item);
     }
-    else static if(__traits(compiles, deserializeImpl(policy, tokenizer, item))) {
-        deserializeImpl(policy, tokenizer, item);
+    else static if(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, item))) {
+        deserializeImplWithPolicy(policy, tokenizer, item);
     }
     else {
         // fall back to non-policy implementation. Assume ReleasePolicy.afterMembers is default.
@@ -1413,7 +1413,7 @@ unittest
     auto policy = DefaultDeserializationPolicy();
     Person p;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, deserializeImpl(policy, tokenizer, p)));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, p)));
 }
 
 
@@ -1509,7 +1509,7 @@ unittest
     auto policy = DefaultDeserializationPolicy();
     T tt;
     auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, deserializeImpl(policy, tokenizer, tt)));
+    static assert(__traits(compiles, deserializeImplWithPolicy(policy, tokenizer, tt)));
 
     auto t = deserialize!T(jsonStr);
     assert(t.name == "valid");   
