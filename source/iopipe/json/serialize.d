@@ -388,13 +388,13 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy pol) if (is(T == enum))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == enum))
 {
     // enums are special, we can serialize them based on the enum name, or the
     // base type.
     static if(hasUDA!(T, enumBaseType))
     {
-        deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item), pol);
+        deserializeItem(policy, tokenizer, *(cast(OriginalType!T*)&item));
     }
     else
     {
