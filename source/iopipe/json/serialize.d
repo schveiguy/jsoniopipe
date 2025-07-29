@@ -35,13 +35,13 @@ struct DefaultDeserializationPolicy {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
 
     // Handles a field (returns true if handled)
-    void onField(JT, T, size_t N)(
+    void onField(JT, T, C)(
         ref JT tokenizer, 
         ref T item, 
         JSONItem key,
-        ref bool[N] visited
+        ref C context
     ) {
-        .onField(this, tokenizer, item, key, visited);
+        .onField(this, tokenizer, item, key, context);
         if(relPol == ReleasePolicy.afterMembers) {
             tokenizer.releaseParsed();
         }
@@ -49,27 +49,32 @@ struct DefaultDeserializationPolicy {
 }
 
 private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
-    alias members = SerializableMembers!T;
-    bool[members.length] visited;
-    // Pre-mark optional fields as visited
-    static foreach(idx, m; members) {
-        static if(hasUDA!(__traits(getMember, T, m), optional)) {
-            visited[idx] = true;
-        }
-        static if(hasUDA!(__traits(getMember, T, m), extras))
-        {
-            // this is the extras member, it holds any extra data that was not
-            // specified as a member.
-            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-            // initialize it for use
-            __traits(getMember, item, m).type = JSONType.Obj;
-            __traits(getMember, item, m).object = null;
-            // extras is always optional.
-            visited[idx] = true;
-        }
+    static if(is(T == V[K], V, K)) {
+        return ubyte.init; // no context for AAs.
     }
+    else {
+        alias members = SerializableMembers!T;
+        bool[members.length] visited;
+        // Pre-mark optional fields as visited
+        static foreach(idx, m; members) {
+            static if(hasUDA!(__traits(getMember, T, m), optional)) {
+                visited[idx] = true;
+            }
+            static if(hasUDA!(__traits(getMember, T, m), extras))
+            {
+                // this is the extras member, it holds any extra data that was not
+                // specified as a member.
+                static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                // initialize it for use
+                __traits(getMember, item, m).type = JSONType.Obj;
+                __traits(getMember, item, m).object = null;
+                // extras is always optional.
+                visited[idx] = true;
+            }
+        }
 
-    return visited;
+        return visited;
+    }
 }
 
 private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
@@ -77,81 +82,89 @@ private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     return ubyte.init;
 }
 
-private void onField(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref bool[N] visited) {
-    static assert(N == SerializableMembers!T.length);
-    alias members = SerializableMembers!T;
-    alias ignoredMembers = AllIgnoredMembers!T;
-
-    static foreach(idx, m; members)
-    {
-      static if(hasUDA!(__traits(getMember, T, m), extras))
-      {
-          // this is the extras member, it holds any extra data that was not
-          // specified as a member.
-          static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-          enum extrasMember = m;
-      }
+private void onField(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+    static if(is(T == V[K], V, K)) {
+        // convert key into K, forcing a copy. We must copy because this key needs to exist forever.
+        auto k = extractString!(K, true)(key, tokenizer.chain);
+        // extract value
+        V v;
+        deserializeItem(policy, tokenizer, v);
+        // store in the AA.
+        item[k] = v;
     }
+    else {
+        static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
+        alias members = SerializableMembers!T;
+        alias ignoredMembers = AllIgnoredMembers!T;
 
-    // Check each member to see if it matches
-    switch(key.data(tokenizer.chain))
-    {
-        static foreach(i, memberName; members) {
-            { // Add a block scope to contain each declaration, avoiding duplicate jsonName
-              // declarations in the foreach loop.
-                static if(!hasUDA!(__traits(getMember, T, memberName), extras)) { 
-                    static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                        enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
-                    }
-                    else {
-                        enum jsonName = memberName;
-                    }
-
-                    case jsonName:
-                    // Choose appropriate deserialization method based on member type               
-                    deserializeItem(policy, tokenizer, __traits(getMember, item, memberName));
-                    visited[i] = true; // Mark as visited 
-                    return;  // ← IMPORTANT: Returns immediately!
-                }
-            }
-        }
-
-        enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
-
-
-        static if(ignoredMembers.length > 0)
+        static foreach(idx, m; members)
         {
-            static foreach(m; ignoredMembers)
+            static if(hasUDA!(__traits(getMember, T, m), extras))
             {
-                static foreach(s; m.ignoredMembers)
-                {
-                case s:
+                // this is the extras member, it holds any extra data that was not
+                // specified as a member.
+                static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                enum extrasMember = m;
+            }
+        }
+
+        // Check each member to see if it matches
+        switch(key.data(tokenizer.chain))
+        {
+            static foreach(i, memberName; members) {
+                { // Add a block scope to contain each declaration, avoiding duplicate jsonName
+                  // declarations in the foreach loop.
+                    static if(!hasUDA!(__traits(getMember, T, memberName), extras)) { 
+                        static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                            enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                        }
+                        else {
+                            enum jsonName = memberName;
+                        }
+
+                        case jsonName:
+                        // Choose appropriate deserialization method based on member type               
+                        deserializeItem(policy, tokenizer, __traits(getMember, item, memberName));
+                        context[i] = true; // Mark as visited 
+                        return;  // ← IMPORTANT: Returns immediately!
+                    }
                 }
             }
-            // ignored members are ignored if they show up
-            tokenizer.skipItem();
-            break;
-        }
 
-        default:
-        static if(ignoreExtras)
-        {
-            tokenizer.skipItem();
-            return; // Ignore unknown fields
-        }
+            enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
 
-        static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
-        {
-            // Need to copy the key from the volatile `chain` to an immutable string on the heap if it is to be used as an AA-key
-            // accessing `key` is only safe if the tokenizer hasn't had a chance to release anything yet, which is true here.
-            auto keyPersistent = key.data(tokenizer.chain).idup;
-            // any extras should be put in here
-            JSONValue!SType newItem;
-            deserializeItem(policy, tokenizer, newItem);
-            __traits(getMember, item, extrasMember).object[keyPersistent] = newItem;
-        } else {
-            // If we get here, it's truly an unknown field
-            throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data(tokenizer.chain), T.stringof));
+
+            static if(ignoredMembers.length > 0)
+            {
+                static foreach(m; ignoredMembers)
+                {
+                    static foreach(s; m.ignoredMembers)
+                    {
+                        case s:
+                    }
+                }
+                // ignored members are ignored if they show up
+                tokenizer.skipItem();
+                break;
+            }
+
+            default:
+            static if(ignoreExtras)
+            {
+                tokenizer.skipItem();
+                return; // Ignore unknown fields
+            }
+
+            static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+            {
+                // recurse with the JSONValue as the object. Note the change in
+                // context, as the AA field deserializer takes a ubyte.
+                ubyte _fakeContext;
+                onField(policy, tokenizer, __traits(getMember, item, extrasMember).object, key, _fakeContext);
+            } else {
+                // If we get here, it's truly an unknown field
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data(tokenizer.chain), T.stringof));
+            }
         }
     }
 }
@@ -179,19 +192,23 @@ private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item
     }
 }
 
-private void onObjectEnd(P, JT, T, size_t N)(ref P policy, ref JT tokenizer, ref T item, ref bool[N] visited) {
-    static assert(N == SerializableMembers!T.length);
-    alias members = SerializableMembers!T;
-    // ensure all members visited
-    static if(members.length)
-    {
-        import std.algorithm : canFind, map, filter;
-        if(visited[].canFind(false))
+private void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, ref C context) {
+    static if(is(T == V[K], V, K)) {
+    }
+    else {
+        static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
+        alias members = SerializableMembers!T;
+        // ensure all members visited
+        static if(members.length)
         {
-            // this is a bit ugly, but gives a nicer message.
-            static immutable marr = [members];
-            import std.range : enumerate;
-            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+            import std.algorithm : canFind, map, filter;
+            if(context[].canFind(false))
+            {
+                // this is a bit ugly, but gives a nicer message.
+                static immutable marr = [members];
+                import std.range : enumerate;
+                throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, context[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+            }
         }
     }
 }
@@ -388,13 +405,13 @@ JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", 
     return item;
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy pol) if (is(T == enum))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == enum))
 {
     // enums are special, we can serialize them based on the enum name, or the
     // base type.
     static if(hasUDA!(T, enumBaseType))
     {
-        deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item), pol);
+        deserializeItem(policy, tokenizer, *(cast(OriginalType!T*)&item));
     }
     else
     {
@@ -405,46 +422,11 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     }
 }
 
-// Note, we don't test for string keys here, because the type might not be a
-// string, but parse from a string. However, there's no static check for that here...
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == V[K], V, K) /*&& isSomeString!K*/)
+// Keys currently must be some string type. Future versions may allow
+// conversion from character data.
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == V[K], V, K))
 {
-    assert(is(T == V[K], V, K)); // repeat here, because we need the key and value types.
-
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
-
-    auto nextTok = tokenizer.peekSignificant();
-    while(nextTok != JSONToken.ObjectEnd)
-    {
-        if(nextTok == JSONToken.Comma)
-        {
-            jsonItem = tokenizer.nextSignificant(); // skip it
-            nextTok = tokenizer.peekSignificant(); // peek at the next one
-            static if(tokenizer.config.JSON5)
-            {
-                // JSON5 allows trailing commas
-                if(nextTok == JSONToken.ObjectEnd)
-                    break;
-            }
-        }
-
-        K nextKey;
-        tokenizer.deserializeImpl(nextKey, relPol);
-
-        jsonItem = tokenizer.nextSignificant()
-            .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
-
-        V nextVal;
-        tokenizer.deserializeImpl(nextVal, relPol);
-
-        item[nextKey] = nextVal;
-
-        // just peek at the next item
-        nextTok = tokenizer.peekSignificant();
-    }
-    // actually skip the token
-    jsonItem = tokenizer.nextSignificant();
+    deserializeObject(policy, tokenizer, item);
 }
 
 unittest

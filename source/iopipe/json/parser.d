@@ -787,12 +787,18 @@ unittest
 }
 
 /// utility function to extract a string while processing escapes. May or may not make a copy.
-T extractString(T, Chain)(JSONItem item, ref Chain c) if (isSomeString!T && isIopipe!Chain)
+T extractString(T, bool forceCopy = false, Chain)(JSONItem item, ref Chain c) if (isSomeString!T && isIopipe!Chain)
 {
     import std.conv;
     assert(item.token == JSONToken.String);
     if(item.hint == JSONParseHint.InPlace)
-        return item.data(c).to!T;
+    {
+        auto buf = item.data(c);
+        static if(forceCopy && is(immutable(T) == immutable(typeof(buf))))
+            return cast(T)buf.dup;
+        else
+            return buf.to!T;
+    }
 
     // need to process it in place. This time replacing escapes. This is so ugly...
     // put the quotes back
