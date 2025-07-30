@@ -437,7 +437,7 @@ unittest
     assert(deserialize!(int[dstring])(`{"a": 1, "b": 2}`) == ["a"d : 1, "b" : 2]);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!is(T == enum) && isNumeric!T)
 {
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
@@ -505,7 +505,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == bool))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == bool))
 {
     auto jsonItem = tokenizer.nextSignificant;
     if(jsonItem.token == JSONToken.True)
@@ -522,7 +522,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isSomeString!T)
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isSomeString!T)
 {
     // Use phobos `to`, we want to duplicate the string if necessary.
 
@@ -550,7 +550,7 @@ private template AllIgnoredMembers(T)
         enum AllIgnoredMembers = staticMap!(ApplyRight!(getUDAs, IgnoredMembers), T, BaseClassesTuple!T);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
     enum isRef(string s) = s == "ref";
     static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
@@ -559,156 +559,17 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     static if(Parameters!(T.fromJSON!JT).length == 1)
         item = T.fromJSON(tokenizer);
     else
-        item = T.fromJSON(tokenizer, relPol);
+        item = T.fromJSON(tokenizer, policy.relPol);
 }
 
-void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
+private void deserializeImplWithPolicy(P, T, JT)(P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
 {
-    // expect an object in JSON. We want to deserialize the JSON data
-    alias members = SerializableMembers!T;
-    alias ignoredMembers = AllIgnoredMembers!T;
-
-    // TODO use bit array instead and core.bitop
-    //size_t[(members.length + (size_t.sizeof * 8 - 1)) / size_t.sizeof / 8] visited;
-    bool[members.length] visited;
-
-    // any members that are optional, mark as already visited
-    static foreach(idx, m; members)
-    {
-        static if(hasUDA!(__traits(getMember, T, m), optional))
-            visited[idx] = true;
-        static if(hasUDA!(__traits(getMember, T, m), extras))
-        {
-            // this is the extras member, it holds any extra data that was not
-            // specified as a member.
-            static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-            enum extrasMember = m;
-            // initialize it for use
-            __traits(getMember, item, m).type = JSONType.Obj;
-            __traits(getMember, item, m).object = null;
-            // extras is always optional.
-            visited[idx] = true;
-        }
-    }
-
-    enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
-
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
-
-    // look at each string, then parse the given values
-    jsonItem = tokenizer.nextSignificant();
-    while(jsonItem.token != JSONToken.ObjectEnd)
-    {
-        if(jsonItem.token == JSONToken.Comma)
-        {
-            jsonItem = tokenizer.nextSignificant();
-            static if(tokenizer.config.JSON5)
-            {
-                // JSON5 allows trailing commas
-                if(jsonItem.token == JSONToken.ObjectEnd)
-                    break;
-            }
-        }
-
-        static if(tokenizer.config.JSON5)
-        {
-            if(jsonItem.token != JSONToken.String && jsonItem.token != JSONToken.Symbol)
-                jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-        }
-        else
-            jsonExpect(jsonItem, JSONToken.String, "Expecting member name of " ~ T.stringof);
-
-        // Have to call nameItem.data() on each access, as the returned string would get invalidated by calls to tokenizer.next()
-        auto nameItem = jsonItem;
-        scope name = () => nameItem.data(tokenizer.chain);
-        // TODO: handle names with unicode escapes
-
-        jsonItem = tokenizer.nextSignificant()
-            .jsonExpect(JSONToken.Colon, "Expecting colon when parsing " ~ T.stringof);
-OBJ_MEMBER_SWITCH:
-        switch(name())
-        {
-            static foreach(i, m; members)
-                static if(!hasUDA!(__traits(getMember, item, m), extras))
-                {{
-                    static if(hasUDA!(__traits(getMember, item, m), alternateName))
-                    {
-                        enum jsonName = getUDAs!(__traits(getMember, item, m), alternateName)[0].name;
-                    }
-                    else
-                        enum jsonName = m;
-                case jsonName:
-                    tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
-                    visited[i] = true;
-                    break OBJ_MEMBER_SWITCH;
-                }}
-
-            static if(ignoredMembers.length > 0)
-            {
-                static foreach(m; ignoredMembers)
-                {
-                    static foreach(s; m.ignoredMembers)
-                    {
-                    case s:
-                    }
-                }
-                // ignored members are ignored if they show up
-                tokenizer.skipItem();
-                break OBJ_MEMBER_SWITCH;
-            }
-
-        default:
-            static if(ignoreExtras)
-            {
-                tokenizer.skipItem();
-                break OBJ_MEMBER_SWITCH;
-            }
-            else static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
-            {{
-                // any extras should be put in here
-                JSONValue!SType newItem;
-                // Need to save name() before deserializeImpl potentially calls release and invalidates the window
-                auto key = name().to!(immutable(SType));
-                tokenizer.deserializeImpl(newItem, relPol);
-                __traits(getMember, item, extrasMember).object[key] = newItem;
-                break OBJ_MEMBER_SWITCH;
-            }}
-            else
-            {
-                throw new JSONIopipeException(format("No member named '%s' in type `%s`", name, T.stringof));
-            }
-        }
-        // shut up compiler
-        static if(members.length > 0 || ignoredMembers.length > 0)
-        {
-            if(relPol == ReleasePolicy.afterMembers)
-                tokenizer.releaseParsed();
-            jsonItem = tokenizer.nextSignificant();
-        }
-    }
-    // ensure all members visited
-    static if(members.length)
-    {
-        import std.algorithm : canFind, map, filter;
-        if(visited[].canFind(false))
-        {
-            // this is a bit ugly, but gives a nicer message.
-            static immutable marr = [members];
-            import std.range : enumerate;
-            throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, visited[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
-        }
-    }
-}
-
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
-{
-    item = tokenizer.parseJSON!(typeof(T.str))(relPol);
+    item = tokenizer.parseJSON!(typeof(T.str))(policy.relPol);
 }
 
 // if type is Nullable, first check for JSONToken.Null, and if not, try and
 // parse real item.
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(Nullable, T))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(Nullable, T))
 {
     if(tokenizer.peekSignificant == JSONToken.Null)
     {
@@ -719,21 +580,21 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     else
     {
         typeof(item.get()) result;
-        deserializeImpl(tokenizer, result, relPol);
+        deserializeItem(policy, tokenizer, result);
         item = result;
     }
 }
 
 // deserialize a class or interface. The type must either provide a static
 // function that returns the deserialized type, or have a zero-arg constructor.
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if ((is(T == class) || is(T == interface)))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if ((is(T == class) || is(T == interface)))
 {
     // NOTE: checking to see if it's callable doesn't help, because there could
     // be a bug, and in that case, it tries the other branch.
     static if(__traits(hasMember, T, "fromJSON"))
         // && is(typeof(item = T.fromJSON(tokenizer, relPol))))
     {
-        item = T.fromJSON(tokenizer, relPol);
+        item = T.fromJSON(tokenizer, policy);
     }
     else static if(is(T == class))
     {
@@ -746,7 +607,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         else
         {
             auto t = new T();
-            deserializeAllMembers(tokenizer, t, relPol);
+            deserializeObject(policy, tokenizer, t);
             item = t;
         }
     }
@@ -979,14 +840,14 @@ unittest
     static class C
     {
         int x;
-        static C fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
+        static C fromJSON(P, JT)(ref JT tokenizer, ref P policy)
         {
             C doDeserialize(T)()
             {
                 tokenizer.rewind();
                 tokenizer.endCache();
                 auto item = new T;
-                tokenizer.deserializeAllMembers(item, relPol);
+                deserializeObject(policy, tokenizer, item);
                 return item;
             }
 
@@ -1103,7 +964,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     static if(representers.length > 0)
     {
         static assert(representers.length == 1, "Only one field can be used to represent an object");
-        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])), policy.relPol);
+        deserializeItem(policy, tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
     }
     else 
     {    
@@ -1301,12 +1162,7 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
     }
     else {
         // fall back to non-policy implementation. Assume ReleasePolicy.afterMembers is default.
-        static if (__traits(hasMember, typeof(policy), "relPol")) {
-            deserializeImpl(tokenizer, item, policy.relPol);
-        }
-        else {
-            deserializeImpl(tokenizer, item, ReleasePolicy.afterMembers);
-        }
+        assert(0);
     }
 }
 
