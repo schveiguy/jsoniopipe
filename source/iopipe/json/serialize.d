@@ -552,10 +552,14 @@ private template AllIgnoredMembers(T)
 
 private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    static if(__traits(compiles, T.fromJSON!(P, JT)(tokenizer, policy)))
+    enum isRef(string s) = s == "ref";
+    static if(__traits(compiles, T.fromJSON!(P, JT)(tokenizer, policy))) {
+        static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!(P, JT), 0)),
+            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON!(P, JT)(tokenizer, policy);
-    else {
-        enum isRef(string s) = s == "ref";
+    }
+    else 
+    {
         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
