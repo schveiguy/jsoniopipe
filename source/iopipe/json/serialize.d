@@ -553,23 +553,26 @@ private template AllIgnoredMembers(T)
 private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
     enum isRef(string s) = s == "ref";
-    static if(__traits(compiles, T.fromJSON!(P, JT)(tokenizer, policy))) {
+    static if(__traits(compiles, T.fromJSON(tokenizer, policy))) {
+        // use policy object
         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!(P, JT), 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        item = T.fromJSON!(P, JT)(tokenizer, policy);
-    }
-    else 
-    {
-        static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+        item = T.fromJSON(tokenizer, policy);
+    } else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init))) {
+        // use ReleasePolicy
+         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
-        
-        static if(Parameters!(T.fromJSON!JT).length == 1)
-            item = T.fromJSON(tokenizer);
-        else
-        {
-            item = T.fromJSON(tokenizer, policy.relPol);
-        }
+        item = T.fromJSON(tokenizer, ReleasePolicy.init);
+    } else static if(Parameters!(T.fromJSON!JT).length == 1) {
+        // use one parameter only
+         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+        //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
+        item = T.fromJSON(tokenizer);
+    } else {
+        // This will fail to compile. Try to nudge the user to use a policy
+        item = T.fromJSON(tokenizer, policy);
     }
 }
 
@@ -746,12 +749,13 @@ private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer,
     static if(__traits(hasMember, T, "fromJSON"))
         // && is(typeof(item = T.fromJSON(tokenizer, relPol))))
     {
-        static if(__traits(compiles, T.fromJSON(tokenizer, policy.relPol)))
-            item = T.fromJSON(tokenizer, policy.relPol);
-        else static if(__traits(compiles, T.fromJSON(tokenizer, policy)))
+        static if(__traits(compiles, T.fromJSON(tokenizer, policy)))
             item = T.fromJSON(tokenizer, policy);
+        else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init)))
+            item = T.fromJSON(tokenizer, policy.relPol);
         else
-            static assert(0, "No suitable fromJSON overload found for "~T.stringof);
+            // This will fail to compile. Try to nudge the user to use a policy
+            item = T.fromJSON(tokenizer, policy);
     }
     else static if(is(T == class))
     {
