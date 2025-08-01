@@ -437,7 +437,7 @@ unittest
     assert(deserialize!(int[dstring])(`{"a": 1, "b": 2}`) == ["a"d : 1, "b" : 2]);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (!is(T == enum) && isNumeric!T)
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!is(T == enum) && isNumeric!T)
 {
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
@@ -505,7 +505,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (is(T == bool))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == bool))
 {
     auto jsonItem = tokenizer.nextSignificant;
     if(jsonItem.token == JSONToken.True)
@@ -522,7 +522,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy)
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy) if (isSomeString!T)
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isSomeString!T)
 {
     // Use phobos `to`, we want to duplicate the string if necessary.
 
@@ -550,16 +550,35 @@ private template AllIgnoredMembers(T)
         enum AllIgnoredMembers = staticMap!(ApplyRight!(getUDAs, IgnoredMembers), T, BaseClassesTuple!T);
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
     enum isRef(string s) = s == "ref";
-    static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
-        "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-    //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
-    static if(Parameters!(T.fromJSON!JT).length == 1)
+    static if(__traits(compiles, T.fromJSON(tokenizer, policy))) {
+        // use policy object
+        static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!(P, JT), 0)),
+            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+        item = T.fromJSON(tokenizer, policy);
+    } else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init))) {
+        // use ReleasePolicy
+         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+        //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
+        item = T.fromJSON(tokenizer, policy.relPol);
+    } else static if(Parameters!(T.fromJSON!JT).length == 1) {
+        // use one parameter only
+         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+        //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
         item = T.fromJSON(tokenizer);
-    else
-        item = T.fromJSON(tokenizer, relPol);
+    } else {
+        // This will fail to compile. Try to nudge the user to use a policy
+        item = T.fromJSON(tokenizer, policy);
+    }
+}
+
+private void deserializeImplWithPolicy(P, T, JT)(P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
+{
+    item = tokenizer.parseJSON!(typeof(T.str))(policy.relPol);
 }
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
@@ -639,7 +658,8 @@ OBJ_MEMBER_SWITCH:
                     else
                         enum jsonName = m;
                 case jsonName:
-                    tokenizer.deserializeImpl(__traits(getMember, item, m), relPol);
+                    auto policy = DefaultDeserializationPolicy(relPol);
+                    deserializeItem(policy, tokenizer, __traits(getMember, item, m));
                     visited[i] = true;
                     break OBJ_MEMBER_SWITCH;
                 }}
@@ -670,7 +690,8 @@ OBJ_MEMBER_SWITCH:
                 JSONValue!SType newItem;
                 // Need to save name() before deserializeImpl potentially calls release and invalidates the window
                 auto key = name().to!(immutable(SType));
-                tokenizer.deserializeImpl(newItem, relPol);
+                auto policy = DefaultDeserializationPolicy(relPol);
+                deserializeItem(policy, tokenizer, newItem);
                 __traits(getMember, item, extrasMember).object[key] = newItem;
                 break OBJ_MEMBER_SWITCH;
             }}
@@ -701,14 +722,9 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(JSONValue, T))
-{
-    item = tokenizer.parseJSON!(typeof(T.str))(relPol);
-}
-
 // if type is Nullable, first check for JSONToken.Null, and if not, try and
 // parse real item.
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if (isInstanceOf!(Nullable, T))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(Nullable, T))
 {
     if(tokenizer.peekSignificant == JSONToken.Null)
     {
@@ -719,21 +735,27 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
     else
     {
         typeof(item.get()) result;
-        deserializeImpl(tokenizer, result, relPol);
+        deserializeItem(policy, tokenizer, result);
         item = result;
     }
 }
 
 // deserialize a class or interface. The type must either provide a static
 // function that returns the deserialized type, or have a zero-arg constructor.
-private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol) if ((is(T == class) || is(T == interface)))
+private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if ((is(T == class) || is(T == interface)))
 {
     // NOTE: checking to see if it's callable doesn't help, because there could
     // be a bug, and in that case, it tries the other branch.
     static if(__traits(hasMember, T, "fromJSON"))
         // && is(typeof(item = T.fromJSON(tokenizer, relPol))))
     {
-        item = T.fromJSON(tokenizer, relPol);
+        static if(__traits(compiles, T.fromJSON(tokenizer, policy)))
+            item = T.fromJSON(tokenizer, policy);
+        else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init)))
+            item = T.fromJSON(tokenizer, policy.relPol);
+        else
+            // This will fail to compile. Try to nudge the user to use a policy
+            item = T.fromJSON(tokenizer, policy);
     }
     else static if(is(T == class))
     {
@@ -746,7 +768,7 @@ private void deserializeImpl(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy 
         else
         {
             auto t = new T();
-            deserializeAllMembers(tokenizer, t, relPol);
+            deserializeObject(policy, tokenizer, t);
             item = t;
         }
     }
@@ -1028,6 +1050,62 @@ unittest
     assert(cArr.length == 3);
 }
 
+// test serializing of class hierarchy with policy
+unittest
+{
+    @ignoredMembers("type")
+    static class C
+    {
+        int x;
+        static C fromJSON(P, JT)(ref JT tokenizer, ref P policy)
+        {
+            C doDeserialize(T)()
+            {
+                tokenizer.rewind();
+                tokenizer.endCache();
+                auto item = new T;
+                deserializeObject(policy, tokenizer, item);
+                return item;
+            }
+
+            tokenizer.startCache();
+            if(tokenizer.parseTo("type"))
+            {
+                int type;
+                tokenizer.deserialize(type);
+                switch(type)
+                {
+                case 0:
+                    // it's a C
+                    return doDeserialize!C;
+                case 1:
+                    return doDeserialize!D;
+                case 2:
+                    return doDeserialize!E;
+                default:
+                    assert(false, "Unknown type");
+                }
+            }
+            assert(false, "Couldn't find type");
+        }
+    }
+
+    static class D : C
+    {
+        string s;
+    }
+
+    static class E : C
+    {
+        double y;
+    }
+
+    auto msg1 = `[{"type" : 0, "x" : 1}, {"type" : 1, "x" : 2, "s" : "hi"}, {"type" : 2, "x" : 3, "y": 5.6}]`;
+
+    auto cArr = msg1.deserialize!(C[]);
+    assert(cArr.length == 3);
+}
+
 void deserializeObject(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
@@ -1103,7 +1181,7 @@ private void deserializeImplWithPolicy(T, JT, Policy)(
     static if(representers.length > 0)
     {
         static assert(representers.length == 1, "Only one field can be used to represent an object");
-        deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])), policy.relPol);
+        deserializeItem(policy, tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
     }
     else 
     {    
@@ -1300,13 +1378,8 @@ void deserializeItem(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
         deserializeImplWithPolicy(policy, tokenizer, item);
     }
     else {
-        // fall back to non-policy implementation. Assume ReleasePolicy.afterMembers is default.
-        static if (__traits(hasMember, typeof(policy), "relPol")) {
-            deserializeImpl(tokenizer, item, policy.relPol);
-        }
-        else {
-            deserializeImpl(tokenizer, item, ReleasePolicy.afterMembers);
-        }
+        // Just for checking, delete this later
+        assert(0);
     }
 }
 
@@ -2250,6 +2323,29 @@ unittest
     {
         int x;
         static S fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
+        {
+            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
+            auto xname = tokenizer.nextSignificant;
+            enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
+            jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
+            auto val = tokenizer.nextSignificant;
+	    // ObjectEnd must be consumed by fromJSON
+            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
+            return S(val.data(tokenizer.chain).to!int);
+        }
+    }
+    auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
+
+    assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
+}
+
+unittest
+{
+    import std.exception;
+    static struct S
+    {
+        int x;
+        static S fromJSON(P, JT)(ref JT tokenizer, ref P policy)
         {
             jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
             auto xname = tokenizer.nextSignificant;
