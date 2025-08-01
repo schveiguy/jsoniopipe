@@ -563,7 +563,7 @@ private void deserializeImplWithPolicy(P, T, JT)(ref P policy, ref JT tokenizer,
          static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
-        item = T.fromJSON(tokenizer, ReleasePolicy.init);
+        item = T.fromJSON(tokenizer, policy.relPol);
     } else static if(Parameters!(T.fromJSON!JT).length == 1) {
         // use one parameter only
          static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
