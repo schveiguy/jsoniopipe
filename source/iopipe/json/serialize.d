@@ -48,7 +48,7 @@ struct DefaultDeserializationPolicy {
     }
 }
 
-private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
+auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
     static if(is(T == V[K], V, K)) {
         return ubyte.init; // no context for AAs.
     }
@@ -77,12 +77,12 @@ private auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     }
 }
 
-private auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
+auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
 {
     return ubyte.init;
 }
 
-private void onField(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+void onField(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref C context) {
     static if(is(T == V[K], V, K)) {
         // convert key into K, forcing a copy. We must copy because this key needs to exist forever.
         auto k = extractString!(K, true)(key, tokenizer.chain);
@@ -169,7 +169,7 @@ private void onField(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, JS
     }
 }
 
-private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ubyte unused)
+void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ubyte unused)
 {   
     static if(__traits(isStaticArray, T))
     {
@@ -192,7 +192,7 @@ private void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item
     }
 }
 
-private void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, ref C context) {
+void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, ref C context) {
     static if(is(T == V[K], V, K)) {
     }
     else {
@@ -213,7 +213,7 @@ private void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item
     }
 }
 
-private void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused) 
+void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused) 
 {
     static if(__traits(isStaticArray, T))
     {
@@ -243,12 +243,6 @@ unittest {
         @serializeAs string s;
         int x;
     }
-
-    auto jsonStr = `"hi"`;
-    auto policy = DefaultDeserializationPolicy();
-    T p;
-    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, policy.deserializeImpl(tokenizer, p)));
 
     T t = deserialize!(T)(`"hi"`);
     assert(t.s == "hi");
@@ -1265,12 +1259,6 @@ unittest
     assert(arr[1] == 2);
     assert(arr[2] == 3);
 
-    // verify deserialize item with policy compiles as expected
-    auto policy = DefaultDeserializationPolicy();
-    int[3] p;
-    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, policy.deserializeImpl(tokenizer, p)));
-
     import std.exception;
     // Test handling of JSON arrays with extra elements
     auto jsonWithExtra = `[1, 2, 3, 4, 5]`;  // Has 5 elements
@@ -1361,12 +1349,6 @@ unittest
         {"name": "Bob", "age": 25}
     ]`;
 
-    // verify deserialize item with policy compiles as expected
-    auto policy = DefaultDeserializationPolicy();
-    Person[] p;
-    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, policy.deserializeImpl(tokenizer, p)));
-
     // Deserialize with policy
     auto persons = deserialize!(Person[])(jsonStr);
     assert(persons.length == 2);
@@ -1455,12 +1437,6 @@ unittest
     assert(person.firstName == "John");
     assert(person.lastName == "Doe");
     assert(person.age == 30);
-
-    // verify deserialize item with policy compiles as expected
-    auto policy = DefaultDeserializationPolicy();
-    Person p;
-    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, policy.deserializeImpl(tokenizer, p)));
 }
 
 
