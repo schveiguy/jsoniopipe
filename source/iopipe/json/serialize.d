@@ -48,6 +48,9 @@ struct DefaultDeserializationPolicy {
     }
 }
 
+// shim for policies that do not specify a release policy
+private ReleasePolicy relPol(P)(ref P policy) => ReleasePolicy.afterMembers;
+
 auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
     static if(is(T == V[K], V, K)) {
         return ubyte.init; // no context for AAs.
@@ -556,13 +559,11 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         // use ReleasePolicy
          static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
         item = T.fromJSON(tokenizer, policy.relPol);
-    } else static if(Parameters!(T.fromJSON!JT).length == 1) {
+    } else static if(__traits(compiles, T.fromJSON(tokenizer))) {
         // use one parameter only
          static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        //static assert(__traits(getParameterStorageClasses, item.fromJSON!JT, 0));
         item = T.fromJSON(tokenizer);
     } else {
         // This will fail to compile. Try to nudge the user to use a policy
@@ -1285,8 +1286,6 @@ unittest
     import std.datetime.date;
 
     static struct DTStringPolicy {
-        // sometimes we need to define relPolicy, like:
-        // ReleasePolicy relPol = ReleasePolicy.afterMembers;
         void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
             static if (is(T == DateTime))
             {
@@ -1481,8 +1480,6 @@ unittest
     // Test custom handling of a type with a policy.
 
     static struct DTStringPolicy {
-        // sometimes we need to define relPol, like:
-        // ReleasePolicy relPol = ReleasePolicy.afterMembers;
         void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
             static if (is(T == DateTime))
             {
@@ -1537,12 +1534,6 @@ unittest
             "name": "Fido", 
             "age": 5
         }}`;
-
-    // verify deserialize item with policy compiles as expected
-    auto policy = DefaultDeserializationPolicy();
-    T tt;
-    auto tokenizer = jsonStr.jsonTokenizer!(ParseConfig(false));
-    static assert(__traits(compiles, policy.deserializeImpl(tokenizer, tt)));
 
     auto t = deserialize!T(jsonStr);
     assert(t.name == "valid");   
