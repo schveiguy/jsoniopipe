@@ -1335,6 +1335,42 @@ unittest
 }
 
 unittest
+{
+    static struct CaseInsensitivePolicy {
+
+        void onField(JT, T, C)(ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+            // Case-insensitive comparison
+            import std.string : icmp;
+            alias members = SerializableMembers!T;
+
+            auto keyStr = key.data(tokenizer.chain);
+
+            static foreach(i, memberName; members) {
+                {
+                    enum jsonName = memberName;
+                    if (icmp(keyStr, jsonName) == 0) {
+                        deserializeImpl(this, tokenizer, __traits(getMember, item, memberName));
+                        context[i] = true;
+                        return;
+                    }
+                }
+            }
+            throw new JSONIopipeException(format("No member named '%s' in type `%s`", keyStr, T.stringof));
+        }
+    }
+
+    static struct S {
+        string userName;
+        int age;
+    }
+    auto jsonStr = `{"username": "Alice", "AGE": 30}`;
+    auto policy = CaseInsensitivePolicy();
+    auto s = deserialize!S(jsonStr, policy);
+    assert(s.userName == "Alice");
+    assert(s.age == 30);
+}
+
+unittest
 { 
     // simple dynamic array test with policy
     static struct Person {
