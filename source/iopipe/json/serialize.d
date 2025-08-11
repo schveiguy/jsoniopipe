@@ -48,6 +48,180 @@ struct DefaultDeserializationPolicy {
     }
 }
 
+static struct CaseInsensitivePolicy {
+
+    void onField(JT, T, C)(ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+        // Case-insensitive comparison
+        import std.string : icmp;
+        alias members = SerializableMembers!T;
+
+        auto keyStr = key.data(tokenizer.chain);
+
+        static foreach(i, memberName; members) {
+            {
+                static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                    enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                }
+                else {
+                    enum jsonName = memberName;
+                }
+                if (icmp(keyStr, jsonName) == 0) {
+                    deserializeImpl(this, tokenizer, __traits(getMember, item, memberName));
+                    context[i] = true;
+                    return;
+                }
+            }
+        }
+        throw new JSONIopipeException(format("No member named '%s' in type `%s`", keyStr, T.stringof));
+    }
+}
+
+unittest
+{
+
+    static struct S {
+        string userName;
+        @alternateName("pet") string dogName;
+        int age;
+    }
+    auto jsonStr = `{"username": "Alice", "PET": "Buddy", "AGE": 30}`;
+    auto policy = CaseInsensitivePolicy();
+    auto s = deserialize!S(jsonStr, policy);
+    assert(s.userName == "Alice");
+    assert(s.dogName == "Buddy");
+    assert(s.age == 30);
+}
+
+static struct DefaultValuePolicy {
+
+    void onField(JT, T, C)(ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+        alias members = SerializableMembers!T;
+        switch(key.data(tokenizer.chain))
+        {
+            static foreach(i, memberName; members) {
+                { 
+                    static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                        enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                    }
+                    else {
+                        enum jsonName = memberName;
+                    }
+
+                    case jsonName:
+                    // Choose appropriate deserialization method based on member type               
+                    deserializeImpl(this, tokenizer, __traits(getMember, item, memberName));
+                    context[i] = true; // Mark as visited 
+                    return;  // ← IMPORTANT: Returns immediately!
+                    
+                }
+            }
+            default:
+            tokenizer.skipItem(); // skip unknown fields
+        }
+    }
+
+    void onObjectEnd(JT, T, C)(ref JT tokenizer, ref T item, ref C context) {
+        alias members = SerializableMembers!T;
+        static foreach(i, memberName; members) {
+            if (!context[i]) {
+                static if (is(typeof(__traits(getMember, item, memberName)) == float) ||
+                          is(typeof(__traits(getMember, item, memberName)) == double) ||
+                          is(typeof(__traits(getMember, item, memberName)) == real))
+                {
+                    // float, double, real members get defaulted to 0.0 instead of NaN
+                    __traits(getMember, item, memberName) = 0.0;
+                }
+                else
+                {
+                    __traits(getMember, item, memberName) = typeof(__traits(getMember, item, memberName)).init;
+                }
+            }
+        }
+    }
+}
+
+unittest
+{
+    static struct S {
+        string name;
+        @alternateName("pet") string dogName;
+        int age;
+        double score;
+
+    }
+
+    auto jsonStr = `{"name": "Alice", "age": 30}`; // "age" and "score" are missing
+
+    auto policy = DefaultValuePolicy();
+    auto s = deserialize!S(jsonStr, policy);
+
+    assert(s.name == "Alice");
+    assert(s.dogName == ""); // Should be default value (empty string)
+    assert(s.age == 30);
+    assert(s.score == 0.0); // Should be default value (0.0)
+}
+
+static struct DTStringPolicy {
+    void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
+        import std.datetime.date;
+        static if (is(T == DateTime))
+        {
+            // Deserialize DateTime from a string
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing DateTime");
+            item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+        }
+        else {
+            // default to module behavior
+            .deserializeImpl(this, tokenizer, item);
+        };
+    }
+}
+
+unittest
+{
+    import std.datetime.date;
+    // Test custom handling of a type with a policy.
+
+    static struct DTStringPolicy {
+        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
+            static if (is(T == DateTime))
+            {
+                // Deserialize DateTime from a string
+                auto jsonItem = tokenizer.nextSignificant
+                    .jsonExpect(JSONToken.String, "Parsing DateTime");
+                item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+            }
+            else {
+                // default to module behavior
+                .deserializeImpl(this, tokenizer, item);
+            };
+        }
+    }
+
+    auto pol = DTStringPolicy();
+    auto dt = deserialize!DateTime(`"2001-Jan-01 12:00:00"`, pol);
+    assert(dt == DateTime(2001, 1, 1, 12, 0, 0));
+
+    static struct Person {
+        string name;
+        int age;
+        DateTime dob;
+    }
+
+    auto jsonStr = `{
+        "name": "John Doe",
+        "age": 30,
+        "dob" : "2001-Jan-01 12:00:00"
+    }`;
+    auto p = deserialize!Person(jsonStr, pol);
+    assert(p.name == "John Doe");
+    assert(p.age == 30);
+    assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));
+}
+
+
+
 // shim for policies that do not specify a release policy
 private ReleasePolicy relPol(P)(ref P policy) => ReleasePolicy.afterMembers;
 
@@ -1285,22 +1459,6 @@ unittest
     // Test deserializing DateTime with a custom policy
     import std.datetime.date;
 
-    static struct DTStringPolicy {
-        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
-            static if (is(T == DateTime))
-            {
-                // Deserialize DateTime from a string
-                auto jsonItem = tokenizer.nextSignificant
-                    .jsonExpect(JSONToken.String, "Parsing DateTime");
-                item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
-            }
-            else {
-                // default to module behavior
-                .deserializeImpl(this, tokenizer, item);
-            };
-        }
-    }
-
     auto policy = DTStringPolicy();
     auto jsonStr = `["2001-Jan-01 12:00:00", "2002-Feb-15 13:30:45", "2003-Mar-20 14:15:30"]`;
     DateTime[3] dates;
@@ -1332,42 +1490,6 @@ unittest
     assert(worker.workSchedule[0] == DateTime(2023, 6, 15, 9, 0, 0));
     assert(worker.workSchedule[1] == DateTime(2023, 6, 16, 9, 30, 0));
     assert(worker.workSchedule[2] == DateTime(2023, 6, 17, 8, 45, 0));
-}
-
-unittest
-{
-    static struct CaseInsensitivePolicy {
-
-        void onField(JT, T, C)(ref JT tokenizer, ref T item, JSONItem key, ref C context) {
-            // Case-insensitive comparison
-            import std.string : icmp;
-            alias members = SerializableMembers!T;
-
-            auto keyStr = key.data(tokenizer.chain);
-
-            static foreach(i, memberName; members) {
-                {
-                    enum jsonName = memberName;
-                    if (icmp(keyStr, jsonName) == 0) {
-                        deserializeImpl(this, tokenizer, __traits(getMember, item, memberName));
-                        context[i] = true;
-                        return;
-                    }
-                }
-            }
-            throw new JSONIopipeException(format("No member named '%s' in type `%s`", keyStr, T.stringof));
-        }
-    }
-
-    static struct S {
-        string userName;
-        int age;
-    }
-    auto jsonStr = `{"username": "Alice", "AGE": 30}`;
-    auto policy = CaseInsensitivePolicy();
-    auto s = deserialize!S(jsonStr, policy);
-    assert(s.userName == "Alice");
-    assert(s.age == 30);
 }
 
 unittest
@@ -1508,48 +1630,6 @@ unittest
     assert(person.age == 30);
     assert(person.pet.name == "Fido");
     assert(person.pet.age == 5);
-}
-
-unittest
-{
-    import std.datetime.date;
-    // Test custom handling of a type with a policy.
-
-    static struct DTStringPolicy {
-        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
-            static if (is(T == DateTime))
-            {
-                // Deserialize DateTime from a string
-                auto jsonItem = tokenizer.nextSignificant
-                    .jsonExpect(JSONToken.String, "Parsing DateTime");
-                item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
-            }
-            else {
-                // default to module behavior
-                .deserializeImpl(this, tokenizer, item);
-            };
-        }
-    }
-
-    auto pol = DTStringPolicy();
-    auto dt = deserialize!DateTime(`"2001-Jan-01 12:00:00"`, pol);
-    assert(dt == DateTime(2001, 1, 1, 12, 0, 0));
-
-    static struct Person {
-        string name;
-        int age;
-        DateTime dob;
-    }
-
-    auto jsonStr = `{
-        "name": "John Doe",
-        "age": 30,
-        "dob" : "2001-Jan-01 12:00:00"
-    }`;
-    auto p = deserialize!Person(jsonStr, pol);
-    assert(p.name == "John Doe");
-    assert(p.age == 30);
-    assert(p.dob == DateTime(2001, 1, 1, 12, 0, 0));
 }
 
 unittest
