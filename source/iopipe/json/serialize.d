@@ -32,8 +32,8 @@ import std.conv;
 import std.format;
 
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
-    ReleasePolicy relPol; // default policy
-    
+    ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
+
     this(ReleasePolicy relPol) {
         this.relPol = relPol;
     }
@@ -61,7 +61,7 @@ unittest
         int age;
     }
     auto jsonStr = `{"username": "Alice", "PET": "Buddy", "AGE": 30}`;
-    auto policy = DefaultDeserializationPolicy!true(ReleasePolicy.afterMembers);
+    auto policy = DefaultDeserializationPolicy!true();
     auto s = deserialize!S(jsonStr, policy);
     assert(s.userName == "Alice");
     assert(s.dogName == "Buddy");
@@ -1463,7 +1463,7 @@ T deserialize(T, JT)(
     ref JT tokenizer,
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false(ReleasePolicy.afterMembers);
+    auto policy = DefaultDeserializationPolicy!false();
     return deserialize!T(tokenizer, policy);
 }
 
@@ -1472,7 +1472,7 @@ void deserialize(T, JT)(
     ref T item
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false(ReleasePolicy.afterMembers);
+    auto policy = DefaultDeserializationPolicy!false();
     deserialize(tokenizer, item, policy);
 }
 
