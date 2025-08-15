@@ -44,7 +44,7 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
         JSONItem key,
         ref C context
     ) {
-        .onField!(caseInsensitive)(this, tokenizer, item, key, context);
+        .onField!caseInsensitive(this, tokenizer, item, key, context);
         if(relPol == ReleasePolicy.afterMembers) {
             tokenizer.releaseParsed();
         }
@@ -187,9 +187,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
                             enum jsonName = memberName;
                         }
                         if (icmp(keyStr, jsonName) == 0) {
-                            policy.deserializeImpl(tokenizer, __traits(getMember, item, memberName));
-                            context[i] = true; // Mark as visited 
-                            return; // ← IMPORTANT: Returns immediately!
+                            goto case jsonName;
                         }
                     }
                 }
