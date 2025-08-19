@@ -226,12 +226,31 @@ void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t
     }
     else // output range? support appender only for now
     {
-        typeof(item[][0]) newElem;
+        alias ElemType = ElementType!(typeof(item[]));
+        ElemType newElem;
         // Deserialize the item at the given index
         policy.deserializeImpl(tokenizer, newElem);
 
-        // append to the output range
-        item.put(newElem);
+        static if(isInstanceOf!(JSONValue, ElementType!(typeof(item[])))) {
+            // Use a safer way to append the element that works with empty arrays
+            static if(__traits(compiles, { import std.array : appender; auto app = appender!(ElemType[]); app.put(newElem); })) {
+                import std.array : Appender;
+                // If item is already an Appender
+                static if(is(T == Appender!U, U)) {
+                    item.put(newElem);
+                } else {
+                    // Direct array concatenation
+                    item ~= newElem;
+                }
+            } else {
+                // Fallback method
+                item.put(newElem);
+            }
+            
+        } else {
+            // append to the output range
+            item.put(newElem);
+        }
     }
 }
 
@@ -347,6 +366,7 @@ unittest {
 	@extras JSONValue!string stuff;
     }
 
+    
     T t = deserialize!(T)(`{"name": "valid", "a": "another string", "b": 2, "c": 8.5}`);
     assert(t.name == "valid");
     assert(t.stuff.object["a"].type == JSONType.String);
@@ -611,9 +631,59 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
     }
 }
 
+/*
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
 {
+    
     item = tokenizer.parseJSON!(typeof(T.str))(policy.relPol);
+}
+*/
+
+void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
+{
+    auto token = tokenizer.peekSignificant();
+    with(JSONToken) switch (token)
+    {
+        case ObjectStart:
+            item.type = JSONType.Obj;
+            item.object = null;
+            deserializeObject(policy, tokenizer, item.object);
+            break;
+        case ArrayStart:
+            item.type = JSONType.Array;
+            item.array = null;
+            deserializeArray(policy, tokenizer, item.array);
+            break;
+        case String:
+        case Symbol:
+            item.type = JSONType.String;
+            deserializeImpl(policy, tokenizer, item.str);
+            break;
+        case Number:
+            tokenizer.startCache;
+            auto jsonItem = tokenizer.next;
+            tokenizer.rewind();
+            tokenizer.endCache;
+            if(jsonItem.hint == JSONParseHint.Int) {
+                item.type = JSONType.Integer;
+                deserializeImpl(policy, tokenizer, item.integer);
+            } else {
+                item.type = JSONType.Floating;
+                deserializeImpl(policy, tokenizer, item.floating);
+            }
+            break;
+        case True:
+        case False:
+            item.type = JSONType.Bool;
+            deserializeImpl(policy, tokenizer, item.boolean);
+            break;
+        case Null:
+            item.type = JSONType.Null;
+            tokenizer.nextSignificant(); // consume the null
+            break;
+        default:
+            throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
+    }
 }
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
