@@ -611,9 +611,59 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
     }
 }
 
+/*
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
 {
+    
     item = tokenizer.parseJSON!(typeof(T.str))(policy.relPol);
+}
+*/
+
+void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
+{
+    auto token = tokenizer.peekSignificant();
+    with(JSONToken) switch (token)
+    {
+        case ObjectStart:
+            item.type = JSONType.Obj;
+            item.object = null;
+            policy.deserializeImpl(tokenizer, item.object);
+            break;
+        case ArrayStart:
+            item.type = JSONType.Array;
+            item.array = null;
+            policy.deserializeImpl(tokenizer, item.array);
+            break;
+        case String:
+        case Symbol:
+            item.type = JSONType.String;
+            policy.deserializeImpl(tokenizer, item.str);
+            break;
+        case Number:
+            tokenizer.startCache;
+            auto jsonItem = tokenizer.next;
+            tokenizer.rewind();
+            tokenizer.endCache;
+            if(jsonItem.hint == JSONParseHint.Int) {
+                item.type = JSONType.Integer;
+                policy.deserializeImpl(tokenizer, item.integer);
+            } else {
+                item.type = JSONType.Floating;
+                policy.deserializeImpl(tokenizer, item.floating);
+            }
+            break;
+        case True:
+        case False:
+            item.type = JSONType.Bool;
+            policy.deserializeImpl(tokenizer, item.boolean);
+            break;
+        case Null:
+            item.type = JSONType.Null;
+            tokenizer.nextSignificant(); // consume the null
+            break;
+        default:
+            throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
+    }
 }
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
