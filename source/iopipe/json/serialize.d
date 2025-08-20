@@ -225,7 +225,7 @@ void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t
         policy.deserializeImpl(tokenizer, item[idx]);
     }
     else // output range? support appender only for now
-    {   
+    {
         typeof(item[][0]) newElem;
         // Deserialize the item at the given index
         policy.deserializeImpl(tokenizer, newElem);
@@ -347,7 +347,6 @@ unittest {
 	@extras JSONValue!string stuff;
     }
 
-    
     T t = deserialize!(T)(`{"name": "valid", "a": "another string", "b": 2, "c": 8.5}`);
     assert(t.name == "valid");
     assert(t.stuff.object["a"].type == JSONType.String);
@@ -628,17 +627,17 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         case ObjectStart:
             item.type = JSONType.Obj;
             item.object = null;
-            deserializeObject(policy, tokenizer, item.object);
+            policy.deserializeImpl(tokenizer, item.object);
             break;
         case ArrayStart:
             item.type = JSONType.Array;
             item.array = null;
-            deserializeImpl(policy, tokenizer, item.array);
+            policy.deserializeImpl(tokenizer, item.array);
             break;
         case String:
         case Symbol:
             item.type = JSONType.String;
-            deserializeImpl(policy, tokenizer, item.str);
+            policy.deserializeImpl(tokenizer, item.str);
             break;
         case Number:
             tokenizer.startCache;
@@ -647,16 +646,16 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
             tokenizer.endCache;
             if(jsonItem.hint == JSONParseHint.Int) {
                 item.type = JSONType.Integer;
-                deserializeImpl(policy, tokenizer, item.integer);
+                policy.deserializeImpl(tokenizer, item.integer);
             } else {
                 item.type = JSONType.Floating;
-                deserializeImpl(policy, tokenizer, item.floating);
+                policy.deserializeImpl(tokenizer, item.floating);
             }
             break;
         case True:
         case False:
             item.type = JSONType.Bool;
-            deserializeImpl(policy, tokenizer, item.boolean);
+            policy.deserializeImpl(tokenizer, item.boolean);
             break;
         case Null:
             item.type = JSONType.Null;
