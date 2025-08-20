@@ -225,32 +225,13 @@ void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t
         policy.deserializeImpl(tokenizer, item[idx]);
     }
     else // output range? support appender only for now
-    {
-        alias ElemType = ElementType!(typeof(item[]));
-        ElemType newElem;
+    {   
+        typeof(item[][0]) newElem;
         // Deserialize the item at the given index
         policy.deserializeImpl(tokenizer, newElem);
 
-        static if(isInstanceOf!(JSONValue, ElementType!(typeof(item[])))) {
-            // Use a safer way to append the element that works with empty arrays
-            static if(__traits(compiles, { import std.array : appender; auto app = appender!(ElemType[]); app.put(newElem); })) {
-                import std.array : Appender;
-                // If item is already an Appender
-                static if(is(T == Appender!U, U)) {
-                    item.put(newElem);
-                } else {
-                    // Direct array concatenation
-                    item ~= newElem;
-                }
-            } else {
-                // Fallback method
-                item.put(newElem);
-            }
-            
-        } else {
-            // append to the output range
-            item.put(newElem);
-        }
+        // append to the output range
+        item.put(newElem);
     }
 }
 
@@ -652,7 +633,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         case ArrayStart:
             item.type = JSONType.Array;
             item.array = null;
-            deserializeArray(policy, tokenizer, item.array);
+            deserializeImpl(policy, tokenizer, item.array);
             break;
         case String:
         case Symbol:
