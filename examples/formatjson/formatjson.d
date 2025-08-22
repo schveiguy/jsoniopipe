@@ -72,14 +72,14 @@ void main(string[] args)
             break;
         case String:
             putStr("\"");
-            putStr(item.data(parser.chain));
+            putStr(item.data);
             putStr("\"");
             break;
         case Number:
         case True:
         case False:
         case Null:
-            putStr(item.data(parser.chain));
+            putStr(item.data);
             break;
         case Error:
         case EOF:
