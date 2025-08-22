@@ -1888,10 +1888,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     /**
      * The chain of parsed items. All items fetched from the tokenizer must be
      * in this chain.
+     *
+     * Deprecated: chain will be removed as a public symbol in a future
+     * release. Manipulating the chain directly can result in an inconsistent
+     * state.
      */
-    JSONPipe!(Chain, GCNoPointerAllocator, cfg) chain;
+    deprecated("Do not use chain directly")
+    ref chain() => _chain;
 
-    alias Element = typeof(chain).Element;
+    private JSONPipe!(Chain, GCNoPointerAllocator, cfg) _chain;
+
+    alias Element = typeof(_chain).Element;
 
     private {
         size_t cIdx; // which index are we on in the chain.
@@ -1899,13 +1906,13 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     this(Chain chain) {
-        this.chain = typeof(this.chain)(chain);
+        this._chain = typeof(this._chain)(chain);
     }
 
     /// Last token has been consumed
     @property bool finished()
     {
-        return chain.finished();
+        return _chain.finished();
     }
 
     /** 
@@ -2072,13 +2079,13 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     /// where are we in the buffer
-    deprecated("Use chain instead of using internal position value")
+    deprecated("Use position field in elements")
     @property size_t position()
     {
-        auto win = chain.window;
+        auto win = _chain.window;
         if(cIdx < win.length)
-            return win[cIdx].item.position - chain.sourceOffset;
-        return chain.valve.window.length; // Ugly, uses the underlying stream chain.
+            return win[cIdx].item.position - _chain.sourceOffset;
+        return _chain.valve.window.length; // Ugly, uses the underlying stream chain.
     }
 
     /**
@@ -2086,17 +2093,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     auto next()
     {
-        if(cIdx == chain.window.length)
+        if(cIdx == _chain.window.length)
         {
-            if(chain.extend(1) == 0)
+            if(_chain.extend(1) == 0)
             {
-                if(chain.window.length == 0)
-                    return chain.eofElement;
-                return chain.window[$-1];
+                if(_chain.window.length == 0)
+                    return _chain.eofElement;
+                return _chain.window[$-1];
             }
         }
 
-        return chain.window[cIdx++];
+        return _chain.window[cIdx++];
     }
 
     /**
@@ -2123,7 +2130,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
     @property size_t index(size_t idx)
     {
-        assert(idx <= chain.window.length);
+        assert(idx <= _chain.window.length);
         return cIdx = idx;
     }
 
@@ -2134,10 +2141,10 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     JSONToken peek()
     {
-        auto win = chain.window;
+        auto win = _chain.window;
         if(cIdx < win.length)
             return win[cIdx].token;
-        return chain.peekToken();
+        return _chain.peekToken();
     }
 
     /**
@@ -2145,8 +2152,12 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Note: you are only allowed to release elements that are ALREADY parsed.
      *
      * Params: elements = the number of code units to release from the stream.
+     *
+     * Deprecated: this function does not do anything any more. You should use
+     * release on the underlying JSONPipe, to ensure a correct release of data
+     * from the underlying stream.
      */
-    deprecated("This function has been derprecated, use flushCache instead")
+    deprecated("This function has been deprecated, use flushCache instead")
     void release(size_t elements)
     {
     }
@@ -2165,22 +2176,37 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Note that any string elements that refer to the buffer are invalidated,
      * since the buffer space will be gone.
      *
-     * Returns: The number of elements that were released.
+     * Returns: The number of code units released.
+     *
+     * Deprecated: This has been renamed to flushCache which returns void.
      */
     deprecated("use flushCache instead")
     size_t releaseParsed()
     {
-        auto origOffset = chain.sourceOffset;
+        auto origOffset = _chain.sourceOffset;
         flushCache();
-        return chain.sourceOffset - origOffset;
+        return _chain.sourceOffset - origOffset;
     }
 
-    /**
-     * flush all cached elements, including the last one parsed.
+    /*
+     * Release all elements that have been parsed completely up to the cache position.
+     * Note that when this action is performed, any lingering references to the
+     * data that was flushed should no longer be used. However, this does not
+     * invalidate the state of the parser or invalidate future parsing. For
+     * instance, you can flush the cache even in the middle of parsing an
+     * object as long as you no longer need the data that was already parsed.
+     *
+     * The goal is to free up buffer space for more incoming data. It is
+     * better to call this function than release directly if you just want to
+     * free up parsed data.
+     *
+     * Note that any string elements that refer to the buffer are invalidated,
+     * since the buffer space will be gone.
+     *
      */
     void flushCache()
     {
-        chain.release(cIdx);
+        _chain.release(cIdx);
         cIdx = 0;
         if(rewindIdx != size_t.max)
             rewindIdx = 0;
@@ -2240,14 +2266,14 @@ unittest
             }
             assert(items.length == verifyAgainst.length);
             if(items[$-1].token == EOF)
-                assert(parser.chain.pos == jsonData.length);
+                assert(parser._chain.pos == jsonData.length);
             foreach(idx, item; items)
             {
                 assert(item.token == verifyAgainst[idx][0]);
                 auto expected = verifyAgainst[idx][1];
                 import std.algorithm.comparison: equal;
                 import std.format: format;
-                assert(equal(item.data, expected), format("(C = %s, replace = %s, curdata = %s) %s != %s", C.stringof, replaceEscapes, jsonData[0 .. parser.chain.pos], item.data, expected));
+                assert(equal(item.data, expected), format("(C = %s, replace = %s, curdata = %s) %s != %s", C.stringof, replaceEscapes, jsonData[0 .. parser._chain.pos], item.data, expected));
             }
         }
         auto jsonData = q"{   {
@@ -2405,7 +2431,7 @@ unittest
     auto idx = parser.index;
     auto item = doSkip(); // skip it all;
     assert(check(item, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // start over
     parser.index = idx;
@@ -2414,7 +2440,7 @@ unittest
     assert(check(parser.next, JSONToken.String, "b"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // another try
     parser.index = idx;
@@ -2429,7 +2455,7 @@ unittest
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // test parseTo
     parser.index = idx;
@@ -2439,7 +2465,7 @@ unittest
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 }
 
 // JSON5 tests!
@@ -2465,7 +2491,7 @@ unittest
     }
     auto item = doSkip(); // skip it all;
     assert(check(item, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // start over
     parser.index = idx;
@@ -2474,7 +2500,7 @@ unittest
     assert(check(parser.next, JSONToken.Symbol, "b"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // another try
     parser.index = idx;
@@ -2489,7 +2515,7 @@ unittest
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // test parseTo
     parser.index = idx;
@@ -2501,7 +2527,7 @@ unittest
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.chain.pos == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 }
 
 // more JSON5 (comments, and other stuff)
@@ -2547,6 +2573,6 @@ unittest
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, ObjectEnd, "}"));
         assert(check(parser.next, EOF, ""));
-        assert(parser.chain.pos == jsonData.length);
+        assert(parser._chain.pos == jsonData.length);
     }
 }
