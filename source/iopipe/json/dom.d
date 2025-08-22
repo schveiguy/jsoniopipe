@@ -59,7 +59,7 @@ private JSONValue!SType buildValue(SType, Item, Tokenizer)(ref Tokenizer parser,
             // TODO: really this should be done while parsing, not that hard.
             import std.conv: parse;
             JT result;
-            auto str = item.data(parser.chain);
+            auto str = item.data();
             if(item.hint == JSONParseHint.Int)
             {
                 result.type = JSONType.Integer;
@@ -125,7 +125,7 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, Rele
         obj.object[name.str.idup] = parser.buildValue!SType(item, relPol);
         // release any parsed data.
         if(relPol == ReleasePolicy.afterMembers)
-            parser.releaseParsed();
+            parser.flushCache();
         item = parser.next();
     }
     return obj;
@@ -141,7 +141,7 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
     {
         arr.array ~= parser.buildValue!SType(item, relPol);
         if(relPol == ReleasePolicy.afterMembers)
-            parser.releaseParsed();
+            parser.flushCache();
         item = parser.next();
         if(item.token == JSONToken.Comma)
             item = parser.next();
@@ -163,7 +163,7 @@ auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol =
     auto item = tokenizer.next();
     auto result = tokenizer.buildValue!SType(item, relPol);
     if(relPol == ReleasePolicy.afterMembers)
-        tokenizer.releaseParsed();
+        tokenizer.flushCache();
     return result;
 }
 
