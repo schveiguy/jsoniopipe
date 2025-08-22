@@ -833,13 +833,13 @@ unittest
 }
 
 /// utility function to extract a string from a json element while processing escapes. May or may not make a copy.
-T extractString(T, bool forceCopy = false, Element)(Element item) if (isSomeString!T && is(Element : JSONPipe!(Args).JSONElement, Args...))
+T extractString(T, bool forceCopy = false, Element)(Element item) if (isSomeString!T && is(Element : JSONPipe!(Args).Element, Args...))
 {
     // for now, the common function uses JSONItem and Chain.
     return extractStringImpl!(T, forceCopy)(*item.owner, item.item);
 }
 
-deprecated("Extract strings from JSONElements, not JSONItems")
+deprecated("Extract strings from Elements, not JSONItems")
 T extractString(T, bool forceCopy = false, Chain)(Chain chain, JSONItem item) if (isSomeString!T && is(Chain == JSONPipe!Args, Args...))
 {
     return extractStringImpl!(T, forceCopy)(chain, item);
@@ -1603,8 +1603,8 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
 }
 
 /**
- * A JSONPipe is an iopipe which maintains a buffer of JSONElements. A
- * JSONElement is a combination of a JSONItem with a reference to the
+ * A JSONPipe is an iopipe which maintains a buffer of Elements. A
+ * Element is a combination of a JSONItem with a reference to the
  * underlying stream, to be able to conveniently extract the data.
  *
  * This pipe validates the json stream as it parses, and stop extending once a
@@ -1669,7 +1669,7 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
 
     ref SourceChain valve() => source;
 
-    static struct JSONElement {
+    static struct Element {
         private JSONItem item;
         public JSONPipe* owner;
         auto token() => item.token;
@@ -1707,7 +1707,7 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
 
         auto opIndex(size_t idx) {
             auto item = items[idx];
-            return JSONElement(items[idx], owner);
+            return Element(items[idx], owner);
         }
     }
 
@@ -1852,9 +1852,9 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
 
     // generate an "EOF" element as if it were at the end of the buffer without
     // having to store it in the buffer.
-    private JSONElement eofElement() {
+    private Element eofElement() {
         auto item = JSONItem(source.window.length, source.window.length + sourceOffset, 0, JSONToken.EOF);
-        return JSONElement(item, &this);
+        return Element(item, &this);
     }
 
     JSONToken peekToken() {
@@ -1891,7 +1891,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     JSONPipe!(Chain, GCNoPointerAllocator, cfg) chain;
 
-    alias JSONElement = typeof(chain).JSONElement;
+    alias Element = typeof(chain).Element;
 
     private {
         size_t cIdx; // which index are we on in the chain.
@@ -2082,7 +2082,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     /**
-     * Obtain the next JSONElement from the stream.
+     * Obtain the next Element from the stream.
      */
     auto next()
     {
@@ -2219,7 +2219,7 @@ unittest
             //auto pipeAdapter = SimplePipe!(C[])(jsonData);
             auto pipeAdapter = jsonData;
             auto parser = jsonTokenizer!(ParseConfig(replaceEscapes, JSON5, includeSpaces))(pipeAdapter);
-            parser.JSONElement[] items;
+            parser.Element[] items;
             while(true)
             {
                 auto item = parser.next;
@@ -2336,7 +2336,7 @@ unittest
     // test caching
     auto jsonData = q"{{"a": 1,"b": 123.456, "c": null}}";
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.JSONElement item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
         return(item.token == token && item.data == expected);
     }
@@ -2389,7 +2389,7 @@ unittest
     auto jsonData = q"{{"a" : 1, "b" : {"c" : [1,2,3], "d" : { "hello" : "world" }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.JSONElement item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
         if(item.token == token && item.data == expected)
             return true;
@@ -2397,7 +2397,7 @@ unittest
         writeln(item);
         return false;
     }
-    parser.JSONElement doSkip()
+    parser.Element doSkip()
     {
         auto token = parser.skipItem();
         return parser.next;
@@ -2449,7 +2449,7 @@ unittest
     auto jsonData = q"{{'a' : 1, b : {c : [1,2,NaN,Infinity, 0x55, 55., .2], t : { false9: 'world' }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true));
-    bool check(parser.JSONElement item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
         if(item.token == token && item.data == expected)
             return true;
@@ -2458,7 +2458,7 @@ unittest
         return false;
     }
     auto idx = parser.index;
-    parser.JSONElement doSkip()
+    parser.Element doSkip()
     {
         auto token = parser.skipItem();
         return parser.next;
@@ -2520,7 +2520,7 @@ unittest
     },
 }`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true, false, true));
-    bool check(parser.JSONElement item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
         if(item.token == token && item.data == expected)
             return true;
