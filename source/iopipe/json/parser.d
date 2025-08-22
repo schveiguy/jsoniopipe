@@ -2116,15 +2116,15 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     void jumpBack(size_t elements)
     {
-        setIdx(cIdx - elements);
+        index(cIdx - elements);
     }
 
     @property index() => cIdx;
 
-    void setIdx(size_t idx)
+    @property size_t index(size_t idx)
     {
         assert(idx <= chain.window.length);
-        cIdx = idx;
+        return cIdx = idx;
     }
 
     /**
@@ -2146,7 +2146,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      *
      * Params: elements = the number of code units to release from the stream.
      */
-    deprecated("This function has been derprecated, use flushParsed instead")
+    deprecated("This function has been derprecated, use flushCache instead")
     void release(size_t elements)
     {
     }
@@ -2347,27 +2347,25 @@ unittest
         assert(check(parser.next, Colon, ":"));
 
         // cache the start of a value
-        parser.startCache;
+        auto startIdx = parser.index;
         assert(check(parser.next, Number, "1"));
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
 
         // replay the cache for the value of a
-        parser.rewind();
+        parser.index = startIdx;
         assert(check(parser.next, Number, "1"));
         assert(check(parser.next, Comma, ","));
 
         // now with the cache still in there, restart the cache
-        parser.startCache;
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
         assert(check(parser.next, Number, "123.456"));
         assert(check(parser.next, Comma, ","));
 
-        // replay b again
-        parser.rewind();
-        parser.endCache();
+        // replay b again, use jumpBack instead
+        parser.jumpBack(4);
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
         // test out releasing cached data
@@ -2404,13 +2402,13 @@ unittest
         auto token = parser.skipItem();
         return parser.next;
     }
-    parser.startCache;
+    auto idx = parser.index;
     auto item = doSkip(); // skip it all;
     assert(check(item, JSONToken.EOF, ""));
     assert(parser.chain.pos == jsonData.length);
 
     // start over
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.String, "b"));
@@ -2419,7 +2417,7 @@ unittest
     assert(parser.chain.pos == jsonData.length);
 
     // another try
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.String, "b"));
@@ -2434,7 +2432,7 @@ unittest
     assert(parser.chain.pos == jsonData.length);
 
     // test parseTo
-    parser.rewind;
+    parser.index = idx;
     assert(parser.parseTo("b", "d", "hello"));
     assert(check(parser.next, JSONToken.String, "world"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
@@ -2459,7 +2457,7 @@ unittest
         writeln(item);
         return false;
     }
-    parser.startCache;
+    auto idx = parser.index;
     parser.JSONElement doSkip()
     {
         auto token = parser.skipItem();
@@ -2470,7 +2468,7 @@ unittest
     assert(parser.chain.pos == jsonData.length);
 
     // start over
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.Symbol, "b"));
@@ -2479,7 +2477,7 @@ unittest
     assert(parser.chain.pos == jsonData.length);
 
     // another try
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.Symbol, "b"));
@@ -2494,7 +2492,7 @@ unittest
     assert(parser.chain.pos == jsonData.length);
 
     // test parseTo
-    parser.rewind;
+    parser.index = idx;
     assert(parser.parseTo("b", "t", "false9"));
     auto n = parser.next;
     assert(check(n, JSONToken.String, "world"));
