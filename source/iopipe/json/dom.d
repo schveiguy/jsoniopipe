@@ -34,7 +34,7 @@ struct JSONValue(SType)
     }
 }
 
-private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
+private JSONValue!SType buildValue(SType, Item, Tokenizer)(ref Tokenizer parser, Item item, ReleasePolicy relPol)
 {
     import std.conv;
 
@@ -50,7 +50,7 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
         {
             JT result;
             result.type = JSONType.String;
-            result.str = extractString!SType(item, parser.chain);
+            result.str = extractString!SType(item);
             return result;
         }
     case Number:
