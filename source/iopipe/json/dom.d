@@ -34,7 +34,7 @@ struct JSONValue(SType)
     }
 }
 
-private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONItem item, ReleasePolicy relPol)
+private JSONValue!SType buildValue(SType, Item, Tokenizer)(ref Tokenizer parser, Item item, ReleasePolicy relPol)
 {
     import std.conv;
 
@@ -50,7 +50,7 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
         {
             JT result;
             result.type = JSONType.String;
-            result.str = extractString!SType(item, parser.chain);
+            result.str = extractString!SType(item);
             return result;
         }
     case Number:
@@ -59,7 +59,7 @@ private JSONValue!SType buildValue(SType, Tokenizer)(ref Tokenizer parser, JSONI
             // TODO: really this should be done while parsing, not that hard.
             import std.conv: parse;
             JT result;
-            auto str = item.data(parser.chain);
+            auto str = item.data();
             if(item.hint == JSONParseHint.Int)
             {
                 result.type = JSONType.Integer;
@@ -125,7 +125,7 @@ private JSONValue!SType buildObject(SType, Tokenizer)(ref Tokenizer parser, Rele
         obj.object[name.str.idup] = parser.buildValue!SType(item, relPol);
         // release any parsed data.
         if(relPol == ReleasePolicy.afterMembers)
-            parser.releaseParsed();
+            parser.flushCache();
         item = parser.next();
     }
     return obj;
@@ -141,7 +141,7 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
     {
         arr.array ~= parser.buildValue!SType(item, relPol);
         if(relPol == ReleasePolicy.afterMembers)
-            parser.releaseParsed();
+            parser.flushCache();
         item = parser.next();
         if(item.token == JSONToken.Comma)
             item = parser.next();
@@ -155,7 +155,7 @@ private JSONValue!SType buildArray(SType, Tokenizer)(ref Tokenizer parser, Relea
  */
 auto parseJSON(Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
 {
-    return parseJSON!(WindowType!(typeof(tokenizer.chain)))(tokenizer, relPol);
+    return parseJSON!(typeof(tokenizer.Element.init.data()))(tokenizer, relPol);
 }
 
 auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol = ReleasePolicy.afterMembers) if (isInstanceOf!(JSONTokenizer, Tokenizer))
@@ -163,7 +163,7 @@ auto parseJSON(SType, Tokenizer)(ref Tokenizer tokenizer, ReleasePolicy relPol =
     auto item = tokenizer.next();
     auto result = tokenizer.buildValue!SType(item, relPol);
     if(relPol == ReleasePolicy.afterMembers)
-        tokenizer.releaseParsed();
+        tokenizer.flushCache();
     return result;
 }
 

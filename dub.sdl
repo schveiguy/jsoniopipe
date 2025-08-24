@@ -1,7 +1,7 @@
 name "jsoniopipe"
 description "JSON and JSON5 parser for iopipe"
 authors "Steven Schveighoffer, Gaofei Qiu"
-copyright "Copyright © 2017, Steven Schveighoffer"
+copyright "Copyright © 2017-2025, Steven Schveighoffer"
 license "boost"
 targetType "library"
 dependency "iopipe" version="*"
