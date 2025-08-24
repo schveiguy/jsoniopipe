@@ -19,7 +19,7 @@ Lifetime management of data from the stream can be configured or inferred based 
 The `iopipe.json.parser` module contains all code that is used to lex and parse the incoming stream into JSON tokens. The names and descriptions of the types are as follows:
 
 * `JSONToken` - an enumeration identifying the type of a token. In many cases, the type of the next token can be determined before fully lexing the next item.
-* `JSONItem` - the representation of a JSON or JSON5 token from the stream. This idenfies the type of token, where it is in the stream/buffer, and parse information about the token.
+* `JSONItem` - the representation of a JSON or JSON5 token from the stream. This identifies the type of token, where it is in the stream/buffer, and parse information about the token.
 * `JSONPipe` - the iopipe of JSON or JSON5 tokens that currently have been parsed from the underlying stream. The `window` member provides the current buffer of tokens that have been parsed.
 * `JSONPipe.Element` - a `JSONItem` paired with a reference to the containing `JSONPipe`. This provides the convenience of extracting the data without needing to provide the pipe manually.
 * `JSONTokenizer` - This is a type which is a stream of JSON or JSON5 tokens with a position as to the last one fetched. This type is useful for deserializers or other mechanisms to keep track of where in the stream you are. This also provides some high-level features such as skipping or jumping to specific items.
@@ -47,7 +47,7 @@ Simple tokens just provide the positions of the slice. JSON strings and numbers 
 * `Exp` - The slice contains a floating point value which contains an exponent piece (e.g. `+e10`)
 * `Hex` - The slice contains a hexadecimal integer. The slice will start with `0x` or `0X`, and contain hexadecimal digits afterwards with upper or lower case letters. This will only appear when parsing JSON5 streams.
 * `Infinity` - The slice contains positive or negative infinity. This will only appear when parsing JSON5 streams.
-* `NaN` - The slice contains positive or negative NaN.
+* `NaN` - The slice contains positive or negative NaN. This will only appear when parsing JSON5 streams.
 
 ## Serializer and Deserializer
 
@@ -67,7 +67,7 @@ There isn't much to the `JSONValue` type as it is a raw tagged union type.
 
 JSON5 deserialization has full support in jsoniopipe. Serialization does not currently have support, but it will be added soon.
 
-JSON5 is a backwards-compatible format specification which follows the EMCA-5 script specification for data. A quick list of differences:
+JSON5 is a backwards-compatible format specification which follows the ECMA-5 script specification for data. A quick list of differences:
 
 * Comments are allowed
 * Hex numbers
@@ -75,7 +75,7 @@ JSON5 is a backwards-compatible format specification which follows the EMCA-5 sc
 * Single-quote strings are allowed
 * Trailing commas are allowed
 
-These convenient features make JSON5 a preferable format to JSON for humain-maintained content such as configuration files. However, due to the more complex parsing requirements, JSON5 is not recommended for sending data over communication channels, where humans are not hand-maintaining the content.
+These convenient features make JSON5 a preferable format to JSON for human-maintained content such as configuration files. However, due to the more complex parsing requirements, JSON5 is not recommended for sending data over communication channels, where humans are not hand-maintaining the content.
 
 ## Issues
 
