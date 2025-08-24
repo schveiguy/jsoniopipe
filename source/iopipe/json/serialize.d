@@ -49,7 +49,7 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     }
 
     auto onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
-        if (maxDepthAvailable-- <= 0) {
+        if (--maxDepthAvailable < 0) {
             throw new JSONIopipeException("Maximum parse depth exceeded");
         }
         return .onObjectBegin(this, tokenizer, item);
@@ -69,7 +69,7 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
 
     void onObjectEnd(JT, T, C)(ref JT tokenizer, ref T item, ref C context) {
         .onObjectEnd(this, tokenizer, item, context);
-        maxDepthAvailable++;
+        ++maxDepthAvailable;
     }
 }
 
