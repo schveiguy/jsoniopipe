@@ -33,9 +33,26 @@ import std.format;
 
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
+    int maxDepthAvailable = 64;
 
     this(ReleasePolicy relPol) {
         this.relPol = relPol;
+    }
+
+    this(int maxDepthAvailable) {
+        this.maxDepthAvailable = maxDepthAvailable;
+    }
+
+    this(ReleasePolicy relPol, int maxDepthAvailable) {
+        this.relPol = relPol;
+        this.maxDepthAvailable = maxDepthAvailable;
+    }
+
+    auto onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return .onObjectBegin(this, tokenizer, item);
     }
 
     void onField(JT, T, C)(
@@ -48,6 +65,11 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
         if(relPol == ReleasePolicy.afterMembers) {
             tokenizer.releaseParsed();
         }
+    }
+
+    void onObjectEnd(JT, T, C)(ref JT tokenizer, ref T item, ref C context) {
+        .onObjectEnd(this, tokenizer, item, context);
+        ++maxDepthAvailable;
     }
 }
 
@@ -68,6 +90,59 @@ unittest
     assert(s.age == 30);
 }
 
+unittest
+{
+    // Test maxDepth on deserializing a struct with nested objects in extra members.
+
+    static struct T {
+        string name;
+	      @extras JSONValue!string stuff;
+    }
+
+
+    auto jsonStr = `{
+        "name": "valid", 
+        "a": "another string", 
+        "b": 2, 
+        "c": 8.5,
+        "pet1": {
+            "name": "Fido", 
+            "age": 5
+        },
+        "pet2": {
+            "name": "Rex", 
+            "age": 3
+        }
+      }`;
+
+    auto policy1 = DefaultDeserializationPolicy!false(1); // Set max depth to 1
+    import std.exception;
+    // This should throw an exception because the depth exceeds 1
+    assertThrown!JSONIopipeException(
+        deserialize!T(jsonStr, policy1)
+    );
+
+    // Now deserialize with a higher max depth
+    auto policy2 = DefaultDeserializationPolicy!false(2); // Set max depth to 2
+    auto t = deserialize!T(jsonStr, policy2);
+    assert(t.name == "valid");
+    assert(t.stuff.object["a"].type == JSONType.String);
+    assert(t.stuff.object["a"].str == "another string");
+    assert(t.stuff.object["b"].type == JSONType.Integer);
+    assert(t.stuff.object["b"].integer == 2);
+    assert(t.stuff.object["c"].type == JSONType.Floating);
+    assert(t.stuff.object["c"].floating == 8.5);
+    assert(t.stuff.object["pet1"].type == JSONType.Obj);
+    assert(t.stuff.object["pet1"].object["name"].type == JSONType.String);
+    assert(t.stuff.object["pet1"].object["name"].str == "Fido");
+    assert(t.stuff.object["pet1"].object["age"].type == JSONType.Integer);
+    assert(t.stuff.object["pet1"].object["age"].integer == 5);
+    assert(t.stuff.object["pet2"].type == JSONType.Obj);
+    assert(t.stuff.object["pet2"].object["name"].type == JSONType.String);
+    assert(t.stuff.object["pet2"].object["name"].str == "Rex");
+    assert(t.stuff.object["pet2"].object["age"].type == JSONType.Integer);
+    assert(t.stuff.object["pet2"].object["age"].integer == 3);
+}
 
 // shim for policies that do not specify a release policy
 private ReleasePolicy relPol(P)(ref P policy) => ReleasePolicy.afterMembers;
@@ -610,14 +685,6 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         item = T.fromJSON(tokenizer, policy);
     }
 }
-
-/*
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
-{
-    
-    item = tokenizer.parseJSON!(typeof(T.str))(policy.relPol);
-}
-*/
 
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
 {
