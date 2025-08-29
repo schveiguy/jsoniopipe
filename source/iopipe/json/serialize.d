@@ -1,17 +1,17 @@
 /**
  * Serialize and deserialize arbitrary objects to/ from json
- * 
+ *
  * Both $(LREF serialize) and $(LREF deserialize) support 3 levels of detail.
  * If the template argument is just a type, they try to serialize it as
  * faithfully as possible.
  * For structs and classes, this means treating the fieldnames as keys in
  * a JSON object.
  * The type JSONValue can be used if dynamic objects are needed.
- * 
+ *
  * For more controls, the various UDAs defined here can be used on compound
  * types or their fields to customize the behaviour of this module in a
  * limited way.
- * 
+ *
  * If that is not enough, structs/ classes can define toJSON or a static
  * fromJSON method and take full control over how they are serialized.
  * For toJSON, $(LREF serializeAllMembers) might be useful. fromJSON will
@@ -56,8 +56,8 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     }
 
     void onField(JT, T, C)(
-        ref JT tokenizer, 
-        ref T item, 
+        ref JT tokenizer,
+        ref T item,
         JSONItem key,
         ref C context
     ) {
@@ -101,16 +101,16 @@ unittest
 
 
     auto jsonStr = `{
-        "name": "valid", 
-        "a": "another string", 
-        "b": 2, 
+        "name": "valid",
+        "a": "another string",
+        "b": 2,
         "c": 8.5,
         "pet1": {
-            "name": "Fido", 
+            "name": "Fido",
             "age": 5
         },
         "pet2": {
-            "name": "Rex", 
+            "name": "Rex",
             "age": 3
         }
       }`;
@@ -213,7 +213,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
             static foreach(i, memberName; members) {
                 { // Add a block scope to contain each declaration, avoiding duplicate jsonName
                   // declarations in the foreach loop.
-                    static if(!hasUDA!(__traits(getMember, T, memberName), extras)) { 
+                    static if(!hasUDA!(__traits(getMember, T, memberName), extras)) {
                         static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
                             enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
                         }
@@ -222,9 +222,9 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
                         }
 
                         case jsonName:
-                        // Choose appropriate deserialization method based on member type               
+                        // Choose appropriate deserialization method based on member type
                         policy.deserializeImpl(tokenizer, __traits(getMember, item, memberName));
-                        context[i] = true; // Mark as visited 
+                        context[i] = true; // Mark as visited
                         return;  // ← IMPORTANT: Returns immediately!
                     }
                 }
@@ -288,7 +288,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
 }
 
 void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ubyte unused)
-{   
+{
     static if(__traits(isStaticArray, T))
     {
         // Check bounds explicitly
@@ -331,7 +331,7 @@ void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, ref C 
     }
 }
 
-void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused) 
+void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused)
 {
     static if(__traits(isStaticArray, T))
     {
@@ -370,8 +370,8 @@ unittest {
 
     import std.exception;
     // This would only work with @ignoreExtras
-    assert( 
-		    deserialize!(T)(`{"s": "invalid", "x": 1}`).collectExceptionMsg 
+    assert(
+		    deserialize!(T)(`{"s": "invalid", "x": 1}`).collectExceptionMsg
 		    == "Parsing string: expected String, got ObjectStart"
 	    );
 }
@@ -1132,7 +1132,7 @@ unittest
     }
 
     auto y = deserialize!Y(`{}`);
-        
+
     static struct T
     {
         @serializeAs string s;
@@ -1143,7 +1143,7 @@ unittest
     assert(arr.length == 2);
     assert(arr[0].s == "hi");
     assert(arr[1].s == "there");
-    
+
 }
 
 // test serializing of class hierarchy
@@ -1327,7 +1327,7 @@ void deserializeImpl(T, JT, Policy)(
     ref T item,
 ) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
 {
-    
+
     // check to see if any member is defined as the representation
     alias representers = getSymbolsByUDA!(T, serializeAs);
     static if(representers.length > 0)
@@ -1335,8 +1335,8 @@ void deserializeImpl(T, JT, Policy)(
         static assert(representers.length == 1, "Only one field can be used to represent an object");
         policy.deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
     }
-    else 
-    {    
+    else
+    {
         deserializeObject(policy, tokenizer, item);
     }
 }
@@ -1395,7 +1395,7 @@ void deserializeImpl(T, JT, Policy)(
     ref JT tokenizer,
     ref T item
 ) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{   
+{
     import std.array : Appender;
     // Deserialize into an appender
     auto app = Appender!T();
@@ -1410,7 +1410,7 @@ unittest
 {
     // Test a simple staticArray with a default policy
     auto jsonStr = `[1, 2, 3]`;
-    int[3] arr; 
+    int[3] arr;
     arr = deserialize!(int[3])(jsonStr);
 
     assert(arr[0] == 1);
@@ -1519,7 +1519,7 @@ unittest
         "age": 32,
         "workSchedule": [
             "2023-Jun-15 09:00:00",
-            "2023-Jun-16 09:30:00", 
+            "2023-Jun-16 09:30:00",
             "2023-Jun-17 08:45:00"
         ]
     }`;
@@ -1533,7 +1533,7 @@ unittest
 }
 
 unittest
-{ 
+{
     // simple dynamic array test with policy
     static struct Person {
         string name;
@@ -1655,14 +1655,14 @@ unittest
         Pet pet;
     }
     auto jsonStr = `{
-        "firstName": "John", 
-        "lastName": "Doe", 
-        "age": 30, 
+        "firstName": "John",
+        "lastName": "Doe",
+        "age": 30,
         "pet": {
-            "name": "Fido", 
+            "name": "Fido",
             "age": 5
         }
-    }`; 
+    }`;
 
     auto person = deserialize!Person(jsonStr);
     assert(person.firstName == "John");
@@ -1682,17 +1682,17 @@ unittest
     }
 
     auto jsonStr = `{
-        "name": "valid", 
-        "a": "another string", 
-        "b": 2, 
+        "name": "valid",
+        "a": "another string",
+        "b": 2,
         "c": 8.5,
         "pet": {
-            "name": "Fido", 
+            "name": "Fido",
             "age": 5
         }}`;
 
     auto t = deserialize!T(jsonStr);
-    assert(t.name == "valid");   
+    assert(t.name == "valid");
     assert(t.stuff.type == JSONType.Obj);
     assert(t.stuff.object["a"].type == JSONType.String);
     assert(t.stuff.object["a"].str == "another string");
@@ -1735,7 +1735,7 @@ unittest
 
     // Verify regular fields are set correctly
     assert(result.a == 1);
-    assert(result.b == 2); 
+    assert(result.b == 2);
     assert(result.c == 3);
 
     // Verify extras member contains the unknown field "d" AND the "extras" field
@@ -1787,11 +1787,15 @@ unittest
 }
 
 
+struct DefaultSerializationPolicy {
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
+}
+
+
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
 {
     auto arr = val;
-    serializeImpl(w, val[]);
+    policy.serializeImpl(w, val[]);
 }
 
 unittest
@@ -1801,22 +1805,22 @@ unittest
     assert(serialize(arr) == "[1, 2, 3, 4, 5]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
 {
     // enums are special, serialize based on the name. Unless there's a UDA
     // saying to serialize as the base type.
     static if(hasUDA!(T, enumBaseType))
     {
-        serializeImpl(w, *cast(OriginalType!T*)&val);
+        policy.serializeImpl(w, *cast(OriginalType!T*)&val);
     }
     else
     {
         auto enumName = val.to!string;
-        serializeImpl(w, enumName);
+        policy.serializeImpl(w, enumName);
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     // open brace
     w("[");
@@ -1827,12 +1831,12 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isD
             first = false;
         else
             w(", ");
-        serializeImpl(w, item);
+        policy.serializeImpl(w, item);
     }
     w("]");
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
 {
     assert(is(T == V[K], V, K));
     enum useKW = !isSomeString!K;
@@ -1868,18 +1872,18 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
             w(", ");
         static if(useKW)
         {
-            serializeImpl(&kw, k);
+            policy.serializeImpl(&kw, k);
 
             // validate the key ended
             if(!keyEnd)
                 throw new JSONIopipeException("Key of type " ~ T.stringof ~ " must serialize to a string that ends with a quote");
         }
         else
-            serializeImpl(w, k);
+            policy.serializeImpl(w, k);
 
         w(" : ");
 
-        serializeImpl(w, v);
+        policy.serializeImpl(w, v);
     }
     w("}");
 }
@@ -1958,7 +1962,7 @@ private template jsonEscapeSubstitutions()
 }
 
 /// Instantiate the template without arguments so it's not necessary at the callsite anymore
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
+void serializeImpl(P, T, Char)(ref P Policy, scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
 {
     import std.algorithm.iteration: substitute;
     w(`"`);
@@ -1988,7 +1992,7 @@ unittest
     assert(raw.serialize.deserialize!string == raw);
 }
 
-void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
+void serializeAllMembers(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, auto ref T val)
 {
     // serialize as an object
     bool first = true;
@@ -2021,35 +2025,42 @@ void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref
             else
                 w(n);
             w(`" : `);
-            serializeImpl(w, __traits(getMember, val, n));
+            policy.serializeImpl(w, __traits(getMember, val, n));
         }
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
+///compatibility shim
+void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
+{
+    auto policy = DefaultSerializationPolicy;
+    serializeAllmembers(policy, w, val);
+}
+
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
 {
     static if(isInstanceOf!(Nullable, T))
     {
         if(val.isNull)
             w("null");
         else
-            serializeImpl(w, val.get);
+            policy.serializeImpl(w, val.get);
     }
     else static if(isInstanceOf!(JSONValue, T))
     {
         with(JSONType) final switch(val.type)
         {
         case Integer:
-            serializeImpl(w, val.integer);
+            policy.serializeImpl(w, val.integer);
             break;
         case Floating:
-            serializeImpl(w, val.floating);
+            policy.serializeImpl(w, val.floating);
             break;
         case String:
-            serializeImpl(w, val.str);
+            policy.serializeImpl(w, val.str);
             break;
         case Array:
-            serializeImpl(w, val.array);
+            policy.serializeImpl(w, val.array);
             break;
         case Obj:
             // serialize as if it was an object
@@ -2065,7 +2076,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
                     w(`"`);
                     w(k);
                     w(`" : `);
-                    serializeImpl(w, v);
+                    policy.serializeImpl(w, v);
                 }
             }
             w("}");
@@ -2087,7 +2098,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
         alias representers = getSymbolsByUDA!(T, serializeAs);
         // serialize as the single item
         static assert(representers.length == 1, "Only one field can be used to represent an object");
-        serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
+        policy.serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
     }
     else static if(isInputRange!T)
     {
@@ -2107,12 +2118,12 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if 
     else
     {
         w("{");
-        serializeAllMembers(w, val);
+        policy.serializeAllMembers(w, val);
         w("}");
     }
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
 {
     if(val is null)
     {
@@ -2128,7 +2139,7 @@ void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, T val) if (is(
     else
     {
         w("{");
-        serializeAllMembers(w, val);
+        policy.serializeAllMembers(w, val);
         w("}");
     }
 }
@@ -2147,7 +2158,8 @@ unittest
     assert(serialize(s) == `{"c" : null}`);
 }
 
-void serializeImpl(Char)(scope void delegate(const(Char)[]) w, typeof(null) val)
+
+void serializeImpl(P, Char)(ref P policy, scope void delegate(const(Char)[]) w, typeof(null) val)
 {
     w("null");
 }
@@ -2162,12 +2174,12 @@ unittest
     assert(serialize(s) == `{"n" : null}`);
 }
 
-void serializeImpl(T, Char)(scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
+void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
 {
     formattedWrite(w, "%s", val);
 }
 
-void serializeImpl(Char)(scope void delegate(const(Char)[]) w, bool val)
+void serializeImpl(P, Char)(ref P policy, scope void delegate(const(Char)[]) w, bool val)
 {
     w(val ? "true" : "false");
 }
@@ -2204,7 +2216,8 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
     }
 
     // serialize the item, recursively
-    serializeImpl(&w, val);
+    auto policy = DefaultSerializationPolicy();
+    serializeImpl(policy, &w, val);
 
     return result;
 }
@@ -2295,8 +2308,11 @@ unittest
         string s;
         void toJSON(scope void delegate(const(char)[]) w)
         {
+            //FIXME: should this be needed?
+            auto policy = DefaultSerializationPolicy();
+
             w("{");
-            serializeAllMembers(w, this);
+            policy.serializeAllMembers(w, this);
             w("}");
         }
     }
@@ -2306,8 +2322,10 @@ unittest
         double d;
         override void toJSON(scope void delegate(const(char)[]) w)
         {
+            //FIXME: should this be needed?
+            auto policy = DefaultSerializationPolicy();
             w("{");
-            serializeAllMembers(w, this);
+            policy.serializeAllMembers(w, this);
             w("}");
         }
     }
@@ -2389,7 +2407,7 @@ unittest
         assert(s2WithPolicy.obj1.e == -0x42);
         assert(s2WithPolicy.arr == ["abc", "def"]);
     }}
-} 
+}
 
 // validate fromJSON works with structs
 unittest
