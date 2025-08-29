@@ -17,6 +17,15 @@ jobs:
         compiler:
           - dmd-latest
           - ldc-latest
+        # Macos 15 + dmd earlier than 2.112 (unreleased as of this comment)
+        # results in segfaults. Disable this combination, and add dmd-master
+        # for now. When 2.112 is released, this workaround should be removed.
+        exclude:
+          - compiler: dmd-latest
+            os: macos-latest
+        include:
+          - compiler: dmd-master
+            os: macos-latest
     steps:
       - uses: actions/checkout@v3
       
