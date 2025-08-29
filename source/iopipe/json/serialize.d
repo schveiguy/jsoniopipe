@@ -2030,6 +2030,13 @@ void serializeAllMembers(P, T, Char)(ref P policy, scope void delegate(const(Cha
     }
 }
 
+///compatibility shim
+void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
+{
+    auto policy = DefaultSerializationPolicy;
+    serializeAllmembers(policy, w, val);
+}
+
 void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
 {
     static if(isInstanceOf!(Nullable, T))
