@@ -55,15 +55,15 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
         return .onObjectBegin(this, tokenizer, item);
     }
 
-    void onField(JT, T, C)(
-        ref JT tokenizer,
-        ref T item,
-        JSONItem key,
+    void onField(JT, T, Element, C)(
+        ref JT tokenizer, 
+        ref T item, 
+        Element key,
         ref C context
     ) {
         .onField!caseInsensitive(this, tokenizer, item, key, context);
         if(relPol == ReleasePolicy.afterMembers) {
-            tokenizer.releaseParsed();
+            tokenizer.flushCache();
         }
     }
 
@@ -181,10 +181,10 @@ auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
     return ubyte.init;
 }
 
-void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, JSONItem key, ref C context) {
+void onField(bool caseInsensitive = false, P, JT, T, Element, C)(ref P policy, ref JT tokenizer, ref T item, Element key, ref C context) {
     static if(is(T == V[K], V, K)) {
         // convert key into K, forcing a copy. We must copy because this key needs to exist forever.
-        auto k = extractString!(K, true)(key, tokenizer.chain);
+        auto k = extractString!(K, true)(key);
         // extract value
         V v;
         policy.deserializeImpl(tokenizer, v);
@@ -208,7 +208,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
         }
 
         // Check each member to see if it matches
-        switch(key.data(tokenizer.chain))
+        switch(key.data)
         {
             static foreach(i, memberName; members) {
                 { // Add a block scope to contain each declaration, avoiding duplicate jsonName
@@ -252,7 +252,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
             {
                 // Case-insensitive comparison
                 import std.string : icmp;
-                auto keyStr = key.data(tokenizer.chain);
+                auto keyStr = key.data;
                 static foreach(i, memberName; members) {
                     {
                         static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
@@ -281,7 +281,7 @@ void onField(bool caseInsensitive = false, P, JT, T, C)(ref P policy, ref JT tok
                 onField!false(policy, tokenizer, __traits(getMember, item, extrasMember).object, key, _fakeContext);
             } else {
                 // If we get here, it's truly an unknown field
-                throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data(tokenizer.chain), T.stringof));
+                throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data, T.stringof));
             }
         }
     }
@@ -508,10 +508,13 @@ unittest {
  * Returns:
  *      the input item
  */
-JSONItem jsonExpect(JSONItem item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) pure @safe
+auto jsonExpect(Item)(Item item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
     if(item.token != expectedToken)
     {
+        //import std.stdio;
+        //import std.algorithm;
+        //writeln(item.owner.window.map!(e => e.data));
         throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
     }
     return item;
@@ -530,7 +533,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         // convert to the enum via the string name
         auto jsonItem = tokenizer.nextSignificant
             .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
-        item = jsonItem.data(tokenizer.chain).to!T;
+        item = jsonItem.data.to!T;
     }
 }
 
@@ -554,13 +557,13 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!
     auto jsonItem = tokenizer.nextSignificant
         .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
 
-    auto str = jsonItem.data(tokenizer.chain);
+    auto str = jsonItem.data;
     static if(isIntegral!T)
     {
         if(jsonItem.hint != JSONParseHint.Int &&
                 !(tokenizer.config.JSON5 && jsonItem.hint == JSONParseHint.Hex))
         {
-            throw new JSONIopipeException(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data(tokenizer.chain)));
+            throw new JSONIopipeException(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data));
         }
     }
     else
@@ -570,7 +573,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!
             // if it's +/- infinity, phobos doesn't parse this properly.
             if(jsonItem.hint == JSONParseHint.Infinity)
             {
-                auto window = jsonItem.data(tokenizer.chain);
+                auto window = jsonItem.data;
                 if(window[0] == '-')
                     item = -T.infinity;
                 else
@@ -581,7 +584,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!
     }
 
     // get the string from the buffer that contains the number
-    auto window = jsonItem.data(tokenizer.chain);
+    auto window = jsonItem.data;
     static if(isIntegral!T && tokenizer.config.JSON5)
     {
         if(jsonItem.hint == JSONParseHint.Hex)
@@ -613,7 +616,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!
         item = window.parse!T;
     if(!window.empty)
     {
-        throw new JSONIopipeException(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data(tokenizer.chain), window));
+        throw new JSONIopipeException(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data, window));
     }
 }
 
@@ -642,7 +645,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
 
     // this should not fail unless the data is non-unicode
-    item = extractString!T(jsonItem, tokenizer.chain);
+    item = extractString!T(jsonItem);
 }
 
 private template SerializableMembers(T)
@@ -707,10 +710,8 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
             policy.deserializeImpl(tokenizer, item.str);
             break;
         case Number:
-            tokenizer.startCache;
             auto jsonItem = tokenizer.next;
-            tokenizer.rewind();
-            tokenizer.endCache;
+            tokenizer.jumpBack(1);
             if(jsonItem.hint == JSONParseHint.Int) {
                 item.type = JSONType.Integer;
                 policy.deserializeImpl(tokenizer, item.integer);
@@ -1155,16 +1156,15 @@ unittest
         int x;
         static C fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
         {
+            auto idx = tokenizer.index;
             C doDeserialize(T)()
             {
-                tokenizer.rewind();
-                tokenizer.endCache();
+                tokenizer.index = idx;
                 auto item = new T;
                 tokenizer.deserializeAllMembers(item, relPol);
                 return item;
             }
 
-            tokenizer.startCache();
             if(tokenizer.parseTo("type"))
             {
                 int type;
@@ -1211,16 +1211,15 @@ unittest
         int x;
         static C fromJSON(P, JT)(ref JT tokenizer, ref P policy)
         {
+            auto idx = tokenizer.index;
             C doDeserialize(T)()
             {
-                tokenizer.rewind();
-                tokenizer.endCache();
+                tokenizer.index = idx;
                 auto item = new T;
                 deserializeObject(policy, tokenizer, item);
                 return item;
             }
 
-            tokenizer.startCache();
             if(tokenizer.parseTo("type"))
             {
                 int type;
@@ -1448,7 +1447,7 @@ unittest
                 // Deserialize DateTime from a string
                 auto jsonItem = tokenizer.nextSignificant
                     .jsonExpect(JSONToken.String, "Parsing DateTime");
-                item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+                item = DateTime.fromSimpleString(extractString!string(jsonItem));
             }
             else {
                 // default to module behavior
@@ -1490,7 +1489,7 @@ unittest
                 // Deserialize DateTime from a string
                 auto jsonItem = tokenizer.nextSignificant
                     .jsonExpect(JSONToken.String, "Parsing DateTime");
-                item = DateTime.fromSimpleString(extractString!string(jsonItem, tokenizer.chain));
+                item = DateTime.fromSimpleString(extractString!string(jsonItem));
             }
             else {
                 // default to module behavior

@@ -20,6 +20,7 @@
 module iopipe.json.parser;
 import iopipe.traits;
 import iopipe.bufpipe;
+import iopipe.buffer;
 import std.range.primitives;
 import std.traits;
 import std.meta: AliasSeq;
@@ -355,7 +356,19 @@ struct JSONItem
      * of where this item begins. If you release data from the beginning, this
      * can be updated manually by subtracting the number of items released.
      */
-    size_t offset;
+    deprecated("do not use offset, as this value will no longer maintained in a future release")
+    @property ref size_t offset() => _offset;
+
+    // private to prevent direct access without going through the deprecated
+    // accessor.
+    private size_t _offset;
+
+    /**
+     * Absolute position from the stream of this JSONItem. This is used with
+     * the JSONPipe to determine the exact bytes, even if data is released
+     * from the stream when fetching the actual data.
+     */
+    size_t position;
 
     /**
      * Length of the item.
@@ -381,9 +394,18 @@ struct JSONItem
      * WARNING:	A JSONItem can only safely call this function before the item is released with "releaseParsed".
      * 		Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
      */
-    auto data(Chain)(ref Chain c)
+    deprecated("Do not use underlying iopipe directly with JSONItem, always use the JSONPipe")
+    auto data(Chain)(ref Chain c) if (!is(Chain == JSONPipe!(Args), Args...))
     {
-        return c.window[offset .. offset + length];
+        return c.window[_offset .. _offset + length];
+    }
+
+    /// ditto
+    auto data(Chain)(ref Chain c) if (is(Chain == JSONPipe!(Args), Args...))
+    {
+        // use the jsonbuffer position to calculate the right slice to grab
+        immutable base = position - c.sourceOffset;
+        return c.source.window[base .. base + length];
     }
 
     /**
@@ -394,9 +416,17 @@ struct JSONItem
      *   false - if the token is not a string, or the code unit before the
      *           current position is either not available or is a double quote.
      */
-    bool isSingleQuoteString(Chain)(ref Chain c)
+    deprecated("Do not use underlying iopipe directly with JSONItem, always use the JSONPipe")
+    bool isSingleQuoteString(Chain)(ref Chain c) if (!is(Chain == JSONPipe!(Args), Args...))
     {
-        return token == JSONToken.String && offset > 0 && c.window[offset - 1] == '\'';
+        return token == JSONToken.String && _offset > 0 && c.window[_offset - 1] == '\'';
+    }
+
+    /// ditto
+    bool isSingleQuoteString(Chain)(ref Chain c) if (is(Chain == JSONPipe!(Args), Args...))
+    {
+        immutable base = position - 1 - c.sourceOffset;
+        return token == JSONToken.String && base < c.source.window.length && c.source.window[base] == '\'';
     }
 }
 
@@ -540,24 +570,9 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
  * or -1 if there is an error. Note that if escapes are not replaced, then this
  * number includes the escape character sequences as-is.
  */
-int parseString(bool replaceEscapes = true, bool JSON5 = false, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
+int validateString(bool replaceEscapes = true, bool JSON5 = false, Chain)(immutable char quotechar, ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
     hint = JSONParseHint.InPlace;
-    // the first character must be a quote
-    auto src = c.window;
-    static if(JSON5)
-    {
-        if(src.length == 0 || (src[pos] != '"' && src[pos] != '\''))
-            return -1;
-        immutable quotechar = src[pos];
-    }
-    else
-    {
-        if(src.length == 0 || src[pos] != '"')
-            return -1;
-        enum quotechar = '"';
-    }
-    ++pos;
 
     immutable origPos = pos;
     static if(replaceEscapes)
@@ -565,14 +580,26 @@ int parseString(bool replaceEscapes = true, bool JSON5 = false, Chain)(ref Chain
     else
         alias targetPos = AliasSeq!();
     bool isEscaped = false;
+    auto src = c.window;
     while(true)
     {
         if(pos == src.length)
         {
             // need more data from the pipe
             if(c.extend(0) == 0)
+            {
                 // EOF.
+                if(quotechar == '\0')
+                {
+                    // the chain passed in was an already-parsed string. Treat
+                    // this as the closing quote.
+                    static if(replaceEscapes)
+                        return cast(int)(targetPos - origPos);
+                    else
+                        return cast(int)(pos - origPos - 1);
+                }
                 return -1;
+            }
             src = c.window;
         }
         auto elem = src[pos];
@@ -749,6 +776,25 @@ escapeSequenceDone:
     assert(0);
 }
 
+int parseString(bool replaceEscapes = true, bool JSON5 = false, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
+{
+    auto src = c.window;
+    static if(JSON5)
+    {
+        if(src.length == 0 || (src[pos] != '"' && src[pos] != '\''))
+            return -1;
+        immutable quotechar = cast(char)src[pos];
+    }
+    else
+    {
+        if(src.length == 0 || src[pos] != '"')
+            return -1;
+        enum quotechar = '"';
+    }
+    ++pos;
+    return validateString!(replaceEscapes, JSON5)(quotechar, c, pos, hint);
+}
+
 /// ditto
 int parseString(ParseConfig config, Chain)(ref Chain c, ref size_t pos, ref JSONParseHint hint)
 {
@@ -786,28 +832,35 @@ unittest
     testParse!false(q"{"abcdef\ua123\n"}", false, JSONParseHint.Escapes);
 }
 
-/// utility function to extract a string while processing escapes. May or may not make a copy.
-T extractString(T, bool forceCopy = false, Chain)(JSONItem item, ref Chain c) if (isSomeString!T && isIopipe!Chain)
+/// utility function to extract a string from a json element while processing escapes. May or may not make a copy.
+T extractString(T, bool forceCopy = false, Element)(Element item) if (isSomeString!T && is(Element : JSONPipe!(Args).Element, Args...))
+{
+    // for now, the common function uses JSONItem and Chain.
+    return extractStringImpl!(T, forceCopy)(*item.owner, item.item);
+}
+
+deprecated("Extract strings from Elements, not JSONItems")
+T extractString(T, bool forceCopy = false, Chain)(Chain chain, JSONItem item) if (isSomeString!T && is(Chain == JSONPipe!Args, Args...))
+{
+    return extractStringImpl!(T, forceCopy)(chain, item);
+}
+
+private T extractStringImpl(T, bool forceCopy = false, Chain)(Chain chain, JSONItem item) if (isSomeString!T && is(Chain == JSONPipe!Args, Args...))
 {
     import std.conv;
     assert(item.token == JSONToken.String);
     if(item.hint == JSONParseHint.InPlace)
     {
-        auto buf = item.data(c);
+        auto buf = item.data(chain);
         static if(forceCopy && is(immutable(T) == immutable(typeof(buf))))
             return cast(T)buf.dup;
         else
             return buf.to!T;
     }
 
-    // need to process it in place. This time replacing escapes. This is so ugly...
-    // put the quotes back
-    item.offset--;
-    item.length += 2;
-
-    // re-parse, this time replacing escapes. This is so ugly...
+    // re-process, this time replacing escapes.
     alias Char = Unqual!(typeof(T.init[0]));
-    auto origData = item.data(c);
+    auto origData = item.data(chain);
     static if(is(Char == typeof(origData[0])))
     {
         // need to make sure we copy.
@@ -819,8 +872,10 @@ T extractString(T, bool forceCopy = false, Chain)(JSONItem item, ref Chain c) if
         auto newpipe = origData.to!(Char[]);
     }
     size_t pos = 0;
-    auto len = parseString(newpipe, pos, item.hint);
-    return cast(T)newpipe[1 .. 1 + len];
+    JSONParseHint hint;
+    auto len = validateString!(true, chain.config.replaceEscapes)('\0', newpipe, pos, hint);
+    assert(len >= 0);
+    return cast(T)newpipe[0 .. len];
 }
 
 /**
@@ -1224,6 +1279,9 @@ private bool parseComment(Chain)(ref Chain c, ref size_t pos)
  *     c = iopipe from which to parse item. If needed, it may be extended.
  *     pos = Current position in the iopipe's window from which the next item
  *     should start. Leading whitespace is allowed.
+ *     chainStartPosition = The position the first element in the chain window
+ *     is in the stream. This is considered to be an absolute position. This
+ *     value is used to fill in the position field of the JSONItem.
  *
  * Returns: If the stream contains a valid JSON item, the details about that
  * item are returned. If the stream does not contain any more items, then EOF
@@ -1231,12 +1289,25 @@ private bool parseComment(Chain)(ref Chain c, ref size_t pos)
  * reason, then Error is returned.
  *
  */
+deprecated("Please supply a chainStartPosition parameter to properly set up the json item position")
 JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref size_t pos)
+{
+    return jsonItem!config(c, 0);
+}
+/// ditto
+JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref size_t pos, immutable size_t chainStartPosition)
 {
     // parse a json item out of the chain
     JSONItem result;
+
+    void setOffset(size_t newOffset) {
+        result._offset = newOffset;
+        result.position = newOffset + chainStartPosition;
+    }
+
     result.token = jsonTok!config(c, pos);
-    result.offset = pos;
+    setOffset(pos);
+
     static if(config.includeSpaces)
     {
         if(result.token == JSONToken.Space)
@@ -1268,7 +1339,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
                         break;
                     }
                 }
-                result.length = pos - result.offset;
+                result.length = pos - result._offset;
                 return result;
             }
             else
@@ -1288,7 +1359,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
                         break;
                     ++pos;
                 }
-                result.length = pos - result.offset;
+                result.length = pos - result._offset;
                 return result;
             }
         }
@@ -1429,7 +1500,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
             if(expected.length > w.length)
             {
                 // error, cannot be valid json.
-                result.offset = c.window.length;
+                setOffset(c.window.length);
                 result.token = JSONToken.Error;
                 return;
             }
@@ -1440,7 +1511,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
                 if(w[i] != c)
                 {
                     // doesn't match
-                    result.offset = pos + i;
+                    setOffset(pos + i);
                     result.token = JSONToken.Error;
                     return;
                 }
@@ -1491,12 +1562,12 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
             if(numChars < 0)
             {
                 result.token = Error;
-                result.length = pos - result.offset;
+                result.length = pos - result._offset;
             }
             else
             {
                 // skip over initial quote
-                result.offset++;
+                setOffset(result._offset + 1);
                 result.length = numChars;
             }
         }
@@ -1508,7 +1579,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
             if(numChars < 0)
             {
                 result.token = Error;
-                result.length = pos - result.offset;
+                result.length = pos - result._offset;
             }
             else
             {
@@ -1520,7 +1591,7 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
         static if(config.JSON5 && config.includeComments)
         {
             if(parseComment(c, pos))
-                result.length = pos - result.offset;
+                result.length = pos - result._offset;
             else
                 result.token = JSONToken.Error;
             break;
@@ -1532,28 +1603,28 @@ JSONItem jsonItem(ParseConfig config = ParseConfig.init, Chain)(ref Chain c, ref
 }
 
 /**
- * An object used to parse JSON items from a given iopipe chain. As the items
- * are parsed, the structure of the JSON data is validated. Note that the data
- * returned is simply references to within the iopipe window.
+ * A JSONPipe is an iopipe which maintains a buffer of Elements. A
+ * Element is a combination of a JSONItem with a reference to the
+ * underlying stream, to be able to conveniently extract the data.
  *
- * Each new item/token can be obtained by calling the `next` method.
+ * This pipe validates the json stream as it parses, and stop extending once a
+ * complete JSON message is parsed. To reset the parsing, use the `reset`
+ * method (in the case where the stream has more json messages in it)
  *
- * Construct with $(LREF jsonTokenizer) for template inference.
+ * Note that a JSONPipe should not be copied, because the Elements have a
+ * reference to the JSONPipe. This design decision may be enforced mechanically
+ * in the future
  */
-struct JSONTokenizer(Chain, ParseConfig cfg)
-{
+struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg = ParseConfig.init) {
+    private import std.bitmanip : BitArray;
+    alias Char = typeof(WindowType!SourceChain.init[0]);
     alias config = cfg;
-    import std.bitmanip : BitArray;
+    private {
+        SourceChain source;
+        AllocatedBuffer!(JSONItem, Allocator, 16) buffer;
+        size_t sourceOffset; // position of source.window[0]
+        size_t pos; // position in the source window tracking how much data we have parsed.
 
-    /**
-     * The iopipe source. Use this to parse the data returned. Do not call
-     * chain.release directly, use the release method instead to make sure the
-     * internal state is maintained.
-     */
-    Chain chain;
-
-    private
-    {
         private enum State : ubyte
         {
             Begin,  // next item should be either an Object or Array
@@ -1569,8 +1640,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         // 0 = array, 1 = object
         BitArray stack;
         size_t stackLen;
-        size_t pos;
         State state;
+
         bool inObj()
         {
             return stackLen == 0 ? false : stack[stackLen - 1];
@@ -1589,52 +1660,285 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         {
             state = (--stackLen == 0) ? State.End : State.Comma;
         }
+    }
 
-        // caching items allows us to parse only once, yet review the items later.
-        bool caching;
-        JSONItem[] cache;
-        size_t cIdx;
+    this(SourceChain source) {
+        this.source = source;
+        sourceOffset = 0;
+    }
+
+    ref SourceChain valve() => source;
+
+    static struct Element {
+        private JSONItem item;
+        public JSONPipe* owner;
+        auto token() => item.token;
+        auto hint() => item.hint;
+        Char[] data() {
+            immutable base = item.position - owner.sourceOffset;
+            return owner.source.window[base .. base + item.length];
+        }
+        deprecated("You do not need to pass in the chain to get the data any more")
+        Char[] data(Chain)(ref Chain) => data();
+
+        bool isSingleQuoteString() {
+            immutable qidx = item.position - 1 - owner.sourceOffset;
+            return qidx < owner.source.window.length && owner.source.window[qidx] == '\'';
+        }
+
+
+        deprecated("You do not need to pass in the chain to get the data any more")
+        bool isSingleQuoteString(Chain)(ref Chain) => isSingleQuoteString();
+    }
+
+    static struct Window {
+        private {
+            JSONPipe *owner;
+            JSONItem[] items;
+        }
+
+        auto front() => this[0];
+        auto back() => this[$-1];
+        bool empty() => items.empty;
+        void popFront() => items.popFront;
+        void popBack() => items.popBack;
+        size_t length() => items.length;
+        alias opDollar = length;
+
+        auto opIndex(size_t idx) {
+            auto item = items[idx];
+            return Element(items[idx], owner);
+        }
+    }
+
+    Window window() => Window(&this, buffer.window);
+
+    size_t extend(size_t elements) {
+        // if we already hit EOF, stop.
+        if(state == State.End && buffer.window.length > 0 && buffer.window[$-1].token == JSONToken.EOF)
+            return 0;
+
+        if(buffer.extend(1) == 0)
+        {
+            // Cannot extend the buffer for some reason, go to end state.
+            state = State.End;
+            return 0;
+        }
+
+
+        auto item = &(buffer.window[$-1] = jsonItem!config(source, pos, sourceOffset));
+
+        if(item.token == JSONToken.EOF) {
+            state = State.End;
+            return 1;
+        }
+
+        static if(config.includeSpaces)
+        {
+            if(item.token == JSONToken.Space)
+                // spaces are always acceptable
+                return 1;
+        }
+        static if(config.includeComments)
+        {
+            if(item.token == JSONToken.Comment)
+                // comments are always acceptable
+                return 1;
+        }
+
+        final switch(state) with(JSONToken)
+        {
+        case State.Begin:
+            // item needs to be an ObjectStart or ArrayStart
+            if(item.token == ObjectStart || item.token == ArrayStart)
+            {
+                state = State.First;
+                pushContainer(item.token == ObjectStart);
+            }
+            else
+                state = State.End; // no more things should happen
+            break;
+        case State.First:
+            // allow ending of the container
+            if(item.token == (inObj ? ObjectEnd : ArrayEnd))
+            {
+                popContainer();
+                break;
+            }
+            goto case State.Member;
+        case State.Member:
+            static if(config.JSON5)
+            {
+                // allow trailing comma -- we can end the array/object here.
+                if(item.token == (inObj ? ObjectEnd : ArrayEnd))
+                {
+                    popContainer();
+                    break;
+                }
+            }
+            if(inObj)
+            {
+                static if(config.JSON5)
+                {
+                    if(item.token == String || item.token == Symbol)
+                        state = State.Colon;
+                    else
+                        item.token = JSONToken.Error;
+                }
+                else
+                {
+                    if(item.token == String)
+                        state = State.Colon;
+                    else
+                        item.token = JSONToken.Error;
+                }
+                break;
+            }
+            goto case State.Value;
+        case State.Colon:
+            // requires colon
+            if(item.token == Colon)
+                state = State.Value;
+            else
+                item.token = JSONToken.Error;
+            break;
+        case State.Value:
+            if(item.token.isValue)
+            {
+                if(item.token == ObjectStart || item.token == ArrayStart)
+                {
+                    pushContainer(item.token == ObjectStart);
+                    state = State.First;
+                }
+                else
+                    state = State.Comma;
+            }
+            else
+                item.token = JSONToken.Error;
+            break;
+        case State.Comma:
+            // can end the object here, or get a comma
+            if(item.token == (inObj ? ObjectEnd : ArrayEnd))
+                popContainer();
+            else if(item.token == Comma)
+                state = State.Member;
+            else
+                item.token = JSONToken.Error;
+            break;
+        case State.End:
+            // this is handled outside the switch statement
+            assert(0);
+        }
+
+        return 1;
+    }
+
+    void release(size_t elements) {
+        if(elements == 0) return;
+        // release up to the end of the last purged element. We do this because
+        // we may need the data before the first element in the buffer (e.g. to
+        // look at quote style)
+        auto lastPurged = buffer.window[elements - 1];
+        auto sourceElementsToPurge = lastPurged.position + lastPurged.length - sourceOffset;
+        source.release(sourceElementsToPurge);
+        sourceOffset += sourceElementsToPurge;
+        pos -= sourceElementsToPurge;
+        buffer.releaseFront(elements);
+
+        // recalibrate all the offsets in the buffer (TODO: we will deprecate this)
+        foreach(ref item; buffer.window)
+            item._offset = item.position - sourceOffset;
+    }
+
+    // generate an "EOF" element as if it were at the end of the buffer without
+    // having to store it in the buffer.
+    private Element eofElement() {
+        auto item = JSONItem(source.window.length, source.window.length + sourceOffset, 0, JSONToken.EOF);
+        return Element(item, &this);
+    }
+
+    JSONToken peekToken() {
+        // peek at the next token from the chain.
+        return jsonTok!config(source, pos);
+    }
+
+    void reset() {
+        release(buffer.window.length);
+        state = State.Begin;
+        stackLen = 0;
+    }
+
+    @property bool finished() => state == State.End;
+}
+
+/**
+ * A JSONTokenizer is a combination of a JSONPipe and a position. This
+ * combination is like a buffered file, where you have a position in the file
+ * where you are parsing. This provides useful utilities for navigating the
+ * buffer while deserializing.
+ *
+ * Each new item/token can be obtained by calling the `next` method.
+ *
+ * Construct with $(LREF jsonTokenizer) for template inference.
+ */
+struct JSONTokenizer(Chain, ParseConfig cfg)
+{
+    alias config = cfg;
+
+    /**
+     * The chain of parsed items. All items fetched from the tokenizer must be
+     * in this chain.
+     *
+     * Deprecated: chain will be removed as a public symbol in a future
+     * release. Manipulating the chain directly can result in an inconsistent
+     * state.
+     */
+    deprecated("Do not use chain directly")
+    ref chain() => _chain;
+
+    private JSONPipe!(Chain, GCNoPointerAllocator, cfg) _chain;
+
+    alias Element = typeof(_chain).Element;
+
+    private {
+        size_t cIdx; // which index are we on in the chain.
+        size_t rewindIdx; // which index to rewind to.
+    }
+
+    this(Chain chain) {
+        this._chain = typeof(this._chain)(chain);
     }
 
     /// Last token has been consumed
     @property bool finished()
     {
-        return state == State.End;
+        return _chain.finished();
     }
 
     /** 
      * Start caching elements. When this is enabled, rewind will jump back to
      * the first element and replay from the cache instead of parsing. Make
      * sure to call endCache when you are done with the replay cache.
+     *
+     * Deprecated: index allows multiple save points, which can be later used
+     * to set the index.
      */
+    deprecated("Use index instead")
     void startCache()
     {
-        caching = true;
-        if(cIdx != 0)
-        {
-            // remove all the elements before the current one, or else the
-            // rewind command will not work right.
-            import std.algorithm.mutation : copy;
-            copy(cache[cIdx .. $], cache[0 .. $ - cIdx]);
-            cache = cache[0 .. $ - cIdx];
-            cache.assumeSafeAppend;
-            cIdx = 0;
-        }
+        rewindIdx = cIdx;
     }
 
     /**
      * stop caching elements (the cache will be freed when no longer needed)
+     *
+     * Deprecated: index allows multiple save points, which can be later used
+     * to set the index.
      */
+    deprecated("Use index instead")
     void endCache()
     {
-        caching = false;
-        if(cIdx == cache.length)
-        {
-            // deallocate the cache.
-            cache.length = 0;
-            cache.assumeSafeAppend;
-            cIdx = 0;
-        }
+        rewindIdx = size_t.max;
     }
 
     /**
@@ -1710,7 +2014,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     /// skip all the spaces and/or comments, and then return the next token
-    JSONItem nextSignificant()
+    auto nextSignificant()
     {
         static if(config.includeSpaces || (config.JSON5 && config.includeComments))
             cast(void)peekSignificant();
@@ -1747,7 +2051,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
                 return false;
             auto item = next;
-            while(!item.data(chain).equal(submember[0]))
+            while(!item.data().equal(submember[0]))
             {
                 cast(void)skipItem();
                 auto nextItem = peekSignificant();
@@ -1775,160 +2079,72 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     /// where are we in the buffer
+    deprecated("Use position field in elements")
     @property size_t position()
     {
-        if(cIdx < cache.length)
-            return cache[cIdx].offset;
-        return pos;
+        auto win = _chain.window;
+        if(cIdx < win.length)
+            return win[cIdx].item.position - _chain.sourceOffset;
+        return _chain.valve.window.length; // Ugly, uses the underlying stream chain.
     }
 
     /**
-     * Obtain the next JSONItem from the stream.
+     * Obtain the next Element from the stream.
      */
-    JSONItem next()
+    auto next()
     {
-        if(cIdx < cache.length)
+        if(cIdx == _chain.window.length)
         {
-            auto item = cache[cIdx++];
-            if(cIdx == cache.length && !caching)
+            if(_chain.extend(1) == 0)
             {
-                // done with the cache
-                cache.length = 0;
-                cache.assumeSafeAppend;
-                cIdx = 0;
+                if(_chain.window.length == 0)
+                    return _chain.eofElement;
+                return _chain.window[$-1];
             }
-            return item;
         }
 
-        if(state == State.End)
-            // return an EOF item, even if the stream is not done.
-            return JSONItem(pos, 0, JSONToken.EOF);
-
-        // else, not cached, parse item from the chain.
-        auto item = chain.jsonItem!config(pos);
-
-        static if(config.includeSpaces)
-        {
-            if(item.token == JSONToken.Space)
-                // spaces are always acceptable
-                return item;
-        }
-        static if(config.includeComments)
-        {
-            if(item.token == JSONToken.Comment)
-                // comments are always acceptable
-                return item;
-        }
-
-        final switch(state) with(JSONToken)
-        {
-        case State.Begin:
-            // item needs to be an ObjectStart or ArrayStart
-            if(item.token == ObjectStart || item.token == ArrayStart)
-            {
-                state = State.First;
-                pushContainer(item.token == ObjectStart);
-            }
-            else
-                state = State.End; // no more things should happen
-            break;
-        case State.First:
-            // allow ending of the container
-            if(item.token == (inObj ? ObjectEnd : ArrayEnd))
-            {
-                popContainer();
-                break;
-            }
-            goto case State.Member;
-        case State.Member:
-            static if(config.JSON5)
-            {
-                // allow trailing comma -- we can end the array/object here.
-                if(item.token == (inObj ? ObjectEnd : ArrayEnd))
-                {
-                    popContainer();
-                    break;
-                }
-            }
-            if(inObj)
-            {
-                static if(config.JSON5)
-                {
-                    if(item.token == String || item.token == Symbol)
-                        state = State.Colon;
-                    else
-                        item.token = Error;
-                }
-                else
-                {
-                    if(item.token == String)
-                        state = State.Colon;
-                    else
-                        item.token = Error;
-                }
-                break;
-            }
-            goto case State.Value;
-        case State.Colon:
-            // requires colon
-            if(item.token == Colon)
-                state = State.Value;
-            else
-                item.token = Error;
-            break;
-        case State.Value:
-            if(item.token.isValue)
-            {
-                if(item.token == ObjectStart || item.token == ArrayStart)
-                {
-                    pushContainer(item.token == ObjectStart);
-                    state = State.First;
-                }
-                else
-                    state = State.Comma;
-            }
-            else
-                item.token = Error;
-            break;
-        case State.Comma:
-            // can end the object here, or get a comma
-            if(item.token == (inObj ? ObjectEnd : ArrayEnd))
-                popContainer();
-            else if(item.token == Comma)
-                state = State.Member;
-            else
-                item.token = Error;
-            break;
-        case State.End:
-            // this is handled outside the switch statement
-            assert(0);
-        }
-
-        if(caching)
-        {
-            cache ~= item;
-            ++cIdx;
-        }
-        return item;
+        return _chain.window[cIdx++];
     }
 
     /**
-     * Reset the tokenizer to the state when $(LREF startCache) was called
+     * Reset the tokenizer to the state the last time startCache was called.
      */
+    deprecated("Use index or jumpBack instead")
     void rewind()
     {
-        assert(caching);
-        cIdx = 0;
+        assert(rewindIdx != size_t.max);
+        cIdx = rewindIdx;
     }
 
     /**
-     * Peek at the input stream and see what's coming next.
+     * Jump back N items in the stream. Note that this includes any items,
+     * including ones that may have been skipped. If a specific element should
+     * be jumped to, store the index and set it later instead.
+     */
+    void jumpBack(size_t elements)
+    {
+        index(cIdx - elements);
+    }
+
+    @property index() => cIdx;
+
+    @property size_t index(size_t idx)
+    {
+        assert(idx <= _chain.window.length);
+        return cIdx = idx;
+    }
+
+    /**
+     * Peek at the input stream and see what's coming next. Note that if this
+     * is at the end of the buffer, a new item is not necessarily loaded into
+     * the buffer.
      */
     JSONToken peek()
     {
-        if(cIdx < cache.length)
-            return cache[cIdx].token;
-        return chain.jsonTok!config(pos);
+        auto win = _chain.window;
+        if(cIdx < win.length)
+            return win[cIdx].token;
+        return _chain.peekToken();
     }
 
     /**
@@ -1936,42 +2152,14 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Note: you are only allowed to release elements that are ALREADY parsed.
      *
      * Params: elements = the number of code units to release from the stream.
+     *
+     * Deprecated: this function does not do anything any more. You should use
+     * release on the underlying JSONPipe, to ensure a correct release of data
+     * from the underlying stream.
      */
+    deprecated("This function has been deprecated, use flushCache instead")
     void release(size_t elements)
     {
-        // not compatible while we are caching. You can still have a cache, but
-        // the caching needs to be turned off.
-        assert(!caching);
-
-        // release items from the chain window.
-        assert(position >= elements);
-        chain.release(elements);
-        pos -= elements;
-
-        // update the cache if it exists
-        if(cache.length > 0)
-        {
-            size_t toRemove = 0;
-            foreach(ref ci; cache)
-            {
-                if(ci.offset < elements)
-                    ++toRemove;
-                else
-                    ci.offset -= elements;
-            }
-            if(toRemove > 0)
-            {
-                // we shouldn't be removing any elements still in use.
-                assert(toRemove <= cIdx);
-
-                import std.algorithm.mutation : copy;
-                auto validElems = cache.length - toRemove;
-                copy(cache[toRemove .. $], cache[0 .. validElems]);
-                cache = cache[0 .. validElems];
-                cache.assumeSafeAppend;
-                cIdx -= toRemove;
-            }
-        }
     }
 
 
@@ -1988,14 +2176,40 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Note that any string elements that refer to the buffer are invalidated,
      * since the buffer space will be gone.
      *
-     * Returns: The number of elements that were released.
+     * Returns: The number of code units released.
+     *
+     * Deprecated: This has been renamed to flushCache which returns void.
      */
+    deprecated("use flushCache instead")
     size_t releaseParsed()
     {
-        auto result = position;
-        if(result)
-            release(result);
-        return result;
+        auto origOffset = _chain.sourceOffset;
+        flushCache();
+        return _chain.sourceOffset - origOffset;
+    }
+
+    /*
+     * Release all elements that have been parsed completely up to the cache position.
+     * Note that when this action is performed, any lingering references to the
+     * data that was flushed should no longer be used. However, this does not
+     * invalidate the state of the parser or invalidate future parsing. For
+     * instance, you can flush the cache even in the middle of parsing an
+     * object as long as you no longer need the data that was already parsed.
+     *
+     * The goal is to free up buffer space for more incoming data. It is
+     * better to call this function than release directly if you just want to
+     * free up parsed data.
+     *
+     * Note that any string elements that refer to the buffer are invalidated,
+     * since the buffer space will be gone.
+     *
+     */
+    void flushCache()
+    {
+        _chain.release(cIdx);
+        cIdx = 0;
+        if(rewindIdx != size_t.max)
+            rewindIdx = 0;
     }
 }
 
@@ -2031,7 +2245,7 @@ unittest
             //auto pipeAdapter = SimplePipe!(C[])(jsonData);
             auto pipeAdapter = jsonData;
             auto parser = jsonTokenizer!(ParseConfig(replaceEscapes, JSON5, includeSpaces))(pipeAdapter);
-            JSONItem[] items;
+            parser.Element[] items;
             while(true)
             {
                 auto item = parser.next;
@@ -2052,14 +2266,14 @@ unittest
             }
             assert(items.length == verifyAgainst.length);
             if(items[$-1].token == EOF)
-                assert(parser.pos == jsonData.length);
+                assert(parser._chain.pos == jsonData.length);
             foreach(idx, item; items)
             {
                 assert(item.token == verifyAgainst[idx][0]);
                 auto expected = verifyAgainst[idx][1];
                 import std.algorithm.comparison: equal;
                 import std.format: format;
-                assert(equal(item.data(jsonData), expected), format("(C = %s, replace = %s, curdata = %s) %s != %s", C.stringof, replaceEscapes, jsonData[0 .. parser.pos], item.data(jsonData), expected));
+                assert(equal(item.data, expected), format("(C = %s, replace = %s, curdata = %s) %s != %s", C.stringof, replaceEscapes, jsonData[0 .. parser._chain.pos], item.data, expected));
             }
         }
         auto jsonData = q"{   {
@@ -2148,9 +2362,9 @@ unittest
     // test caching
     auto jsonData = q"{{"a": 1,"b": 123.456, "c": null}}";
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(JSONItem item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
-        return(item.token == token && item.data(parser.chain) == expected);
+        return(item.token == token && item.data == expected);
     }
     with(JSONToken)
     {
@@ -2159,39 +2373,38 @@ unittest
         assert(check(parser.next, Colon, ":"));
 
         // cache the start of a value
-        parser.startCache;
+        auto startIdx = parser.index;
         assert(check(parser.next, Number, "1"));
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
 
         // replay the cache for the value of a
-        parser.rewind();
+        parser.index = startIdx;
         assert(check(parser.next, Number, "1"));
         assert(check(parser.next, Comma, ","));
 
         // now with the cache still in there, restart the cache
-        parser.startCache;
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
         assert(check(parser.next, Number, "123.456"));
         assert(check(parser.next, Comma, ","));
 
-        // replay b again
-        parser.rewind();
-        parser.endCache();
+        // replay b again, use jumpBack instead
+        parser.jumpBack(4);
         assert(check(parser.next, String, "b"));
         assert(check(parser.next, Colon, ":"));
         // test out releasing cached data
-        parser.releaseParsed();
+        parser.flushCache();
         assert(check(parser.next, Number, "123.456"));
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, String, "c"));
         assert(check(parser.next, Colon, ":"));
         assert(check(parser.next, Null, "null"));
         // the cache should now be exhausted
-        assert(parser.cache.length == 0);
-        assert(parser.cIdx == 0);
+        // NOTE: the cache doesn't work the same any more. It's always used.
+        //assert(parser.chain.window.length == 0);
+        //assert(parser.cIdx == 0);
         assert(check(parser.next, ObjectEnd, "}"));
     }
 }
@@ -2202,35 +2415,35 @@ unittest
     auto jsonData = q"{{"a" : 1, "b" : {"c" : [1,2,3], "d" : { "hello" : "world" }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(JSONItem item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
-        if(item.token == token && item.data(parser.chain) == expected)
+        if(item.token == token && item.data == expected)
             return true;
         import std.stdio;
         writeln(item);
         return false;
     }
-    JSONItem doSkip()
+    parser.Element doSkip()
     {
         auto token = parser.skipItem();
         return parser.next;
     }
-    parser.startCache;
+    auto idx = parser.index;
     auto item = doSkip(); // skip it all;
     assert(check(item, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // start over
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.String, "b"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // another try
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.String, "b"));
@@ -2242,17 +2455,17 @@ unittest
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // test parseTo
-    parser.rewind;
+    parser.index = idx;
     assert(parser.parseTo("b", "d", "hello"));
     assert(check(parser.next, JSONToken.String, "world"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 }
 
 // JSON5 tests!
@@ -2262,35 +2475,35 @@ unittest
     auto jsonData = q"{{'a' : 1, b : {c : [1,2,NaN,Infinity, 0x55, 55., .2], t : { false9: 'world' }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true));
-    bool check(JSONItem item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
-        if(item.token == token && item.data(parser.chain) == expected)
+        if(item.token == token && item.data == expected)
             return true;
         import std.stdio;
         writeln(item);
         return false;
     }
-    parser.startCache;
-    JSONItem doSkip()
+    auto idx = parser.index;
+    parser.Element doSkip()
     {
         auto token = parser.skipItem();
         return parser.next;
     }
     auto item = doSkip(); // skip it all;
     assert(check(item, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // start over
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.Symbol, "b"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // another try
-    parser.rewind;
+    parser.index = idx;
     assert(check(parser.next, JSONToken.ObjectStart, "{"));
     assert(check(doSkip, JSONToken.Comma, ","));
     assert(check(parser.next, JSONToken.Symbol, "b"));
@@ -2302,19 +2515,19 @@ unittest
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(doSkip, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 
     // test parseTo
-    parser.rewind;
+    parser.index = idx;
     assert(parser.parseTo("b", "t", "false9"));
     auto n = parser.next;
     assert(check(n, JSONToken.String, "world"));
-    assert(n.isSingleQuoteString(jsonData));
+    assert(n.isSingleQuoteString);
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
-    assert(parser.position == jsonData.length);
+    assert(parser._chain.pos == jsonData.length);
 }
 
 // more JSON5 (comments, and other stuff)
@@ -2333,9 +2546,9 @@ unittest
     },
 }`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true, false, true));
-    bool check(JSONItem item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
-        if(item.token == token && item.data(parser.chain) == expected)
+        if(item.token == token && item.data == expected)
             return true;
         import std.stdio;
         writeln(item);
@@ -2352,7 +2565,7 @@ unittest
         assert(check(parser.next, ObjectStart, "{"));
         auto n = parser.next;
         assert(check(n, String, "abc"));
-        assert(n.isSingleQuoteString(jsonData));
+        assert(n.isSingleQuoteString);
         assert(check(parser.next, Colon, ":"));
         assert(check(parser.next, Number, "123"));
         assert(check(parser.next, Comment, "// another comment\n"));
@@ -2360,6 +2573,6 @@ unittest
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, ObjectEnd, "}"));
         assert(check(parser.next, EOF, ""));
-        assert(parser.position == jsonData.length);
+        assert(parser._chain.pos == jsonData.length);
     }
 }
