@@ -31,6 +31,225 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
+struct MemberOptions {
+    char quoteChar = '"';        // Use " or ' for quotes
+    bool spaceBeforeColon = false;  // "key" : vs "key":
+    bool spaceAfterColon = true;    // "key": vs "key" :
+    bool escapeKey = true;          // Whether to escape special chars in key
+}
+
+enum KeywordValue {
+    Null,
+    True, 
+    False,
+    // JSON5 extensions
+    Infinity,
+    NegativeInfinity,
+    NaN
+}
+
+struct JSONFormatter(Chain) {
+private:
+    Chain* outputChain;
+    int spacing = 0;
+    enum indent = 4;
+
+    bool[] isFirstInObj;
+    bool[] isFirstInArray;
+    size_t nWritten = 0;
+
+    void putIndent() {
+        outputChain.ensureElems(nWritten + indent * spacing + 1);
+        outputChain.window[nWritten] = '\n';
+        outputChain.window[nWritten + 1 .. nWritten + 1 + indent * spacing] = ' ';
+        nWritten += indent * spacing + 1;
+    }
+
+    void putStr(const(char)[] s) {
+        outputChain.ensureElems(nWritten + s.length);
+        outputChain.window[nWritten .. nWritten + s.length] = s;
+        nWritten += s.length;
+    }
+
+    private bool isValidJSONNumber(string str) {
+        import std.regex;
+        static auto numberRegex = regex(r"^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$");
+        return !str.matchFirst(numberRegex).empty;
+    }
+
+public:
+    this(ref Chain chain) {
+        outputChain = &chain;
+    }
+
+    void beginObject() {
+        isFirstInObj ~= true; 
+        ++spacing;
+        putStr("{");
+        putIndent();
+    }
+
+    void endObject() {
+        isFirstInObj = isFirstInObj[0..$-1];
+        --spacing;
+        putIndent();
+        putStr("}");
+    }
+
+    void beginArray() {
+        isFirstInArray ~= true;
+        ++spacing;
+        putStr("[");
+        putIndent();
+    }
+
+    void endArray() {
+        isFirstInArray = isFirstInArray[0..$-1];
+        --spacing;
+        putIndent();
+        putStr("]");
+    }
+
+    void addMember(T)(T key, MemberOptions options = MemberOptions.init) {
+        
+        if (key.length == 0 ) {
+            // use for array elements
+            if (!isFirstInArray[$-1]) {
+                putStr(", ");
+                putIndent();
+            }
+            isFirstInArray[$-1] = false;
+            return;
+        }
+
+        if (!isFirstInObj[$-1]) {
+            putStr(",");
+            putIndent();
+        }
+
+        static if (is(typeof(key) == string)) {
+            if (options.escapeKey) {
+                beginString(options.quoteChar);
+                addStringData(key);
+                endString(options.quoteChar);
+            } else {
+                beginString(options.quoteChar);
+                addStringData!(false, false)(key);
+                endString(options.quoteChar);
+            }
+        } else {
+            putStr(to!string(key));
+        }
+        if (options.spaceBeforeColon) {
+            putStr(" ");
+        }
+        putStr(":");
+        if (options.spaceAfterColon) {
+            putStr(" ");
+        }
+
+        isFirstInObj[$-1] = false;
+    }
+
+    void beginString(char quoteChar = '"') {
+        putStr([quoteChar]);
+    }
+
+    // will automatically escape string data as needed.
+    void addStringData(bool validate = true, bool addEscapes = true, T)(T value) {
+        static if (validate) {
+        // Validate that the string doesn't contain invalid characters
+        foreach(char c; value) {
+            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+                throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+            }
+        }
+        }
+    
+        static if (addEscapes) {
+            import std.algorithm.iteration: substitute;
+            import std.conv: to;
+            auto escaped = value.substitute!(jsonEscapeSubstitutions!()).to!string;
+            putStr(escaped);
+        } else {
+            putStr(value);
+        }
+    }
+
+
+    void endString(char quoteChar = '"') {
+        putStr([quoteChar]);
+    }
+
+    // allow numeric types, or strings that are validated to be JSON numbers
+    void addNumericData(T)(T value, string formatStr = "%s") {
+        static if (is(T == string)) {
+            if (!isValidJSONNumber(value)) {
+                throw new JSONIopipeException(format("Invalid JSON number: %s", value));
+            }
+            putStr(value);
+        } else {
+            import std.format : format;
+            putStr(format(formatStr, value));
+        }
+    }
+
+    // null, true, false, inf, etc.
+    void addKeywordValue(KeywordValue value) {
+        final switch (value) {
+        case KeywordValue.Null:
+            putStr("null");
+            break;
+        case KeywordValue.True:
+            putStr("true");
+            break;
+        case KeywordValue.False:
+            putStr("false");
+            break;
+        case KeywordValue.Infinity:
+            putStr("Infinity");
+            break;
+        case KeywordValue.NegativeInfinity:
+            putStr("-Infinity");
+            break;
+        case KeywordValue.NaN:
+            putStr("NaN");
+            break;
+        }
+    }
+
+    void addWhitespace(T)(T data) {
+        foreach(char c; data) {
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                throw new JSONIopipeException(format("Invalid whitespace character: \\u%04X", cast(int)c));
+            }
+        }
+        putStr(data);
+    }
+
+    // // add a comment (JSON5 only), must be a complete comment (validated)
+    void addComment(T)(T commentData) {
+        static if (is(T == string)) {
+            import std.algorithm.searching : startsWith, endsWith;
+            if (!commentData.startsWith("//") && !commentData.startsWith("/*") && !commentData.endsWith("*/")) {
+                throw new JSONIopipeException(format("Invalid comment format: %s", commentData));
+            }
+        }
+        putStr(commentData);
+    }
+
+    void flushWritten() {
+        outputChain.release(nWritten);
+        nWritten = 0;
+    }
+
+    auto chain() {
+        return outputChain;
+    }
+
+}
+
+
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
     int maxDepthAvailable = 64;
@@ -734,6 +953,31 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
     }
 }
 
+unittest {
+    // Test emptyObject first
+    auto jsonStr1 = `{"emptyObject": {}}`;
+    auto jv1 = deserialize!(JSONValue!string)(jsonStr1);
+    
+    assert(jv1.type == JSONType.Obj);
+    assert("emptyObject" in jv1.object);
+    
+    auto emptyObj = jv1.object["emptyObject"];
+    assert(emptyObj.type == JSONType.Obj);
+    assert(emptyObj.object.length == 0);
+
+    auto jsonStr2 = `{"emptyArray": []}`;
+    auto jv2 = deserialize!(JSONValue!string)(jsonStr2);
+    
+    assert(jv2.type == JSONType.Obj);
+    assert("emptyArray" in jv2.object);
+    
+    auto emptyArr = jv2.object["emptyArray"];
+    assert(emptyArr.type == JSONType.Array);
+    assert(emptyArr.array.length == 0);
+}
+
+
+
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
@@ -1353,6 +1597,12 @@ void deserializeArray(T, JT, Policy)(
     // Parse array elements
     size_t elementCount = 0;
     while(true) {
+
+        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
+            // Handle empty array case
+            break;
+        }
+      
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
 
