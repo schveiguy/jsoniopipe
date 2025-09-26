@@ -178,12 +178,12 @@ public:
     // will automatically escape string data as needed.
     void addStringData(bool validate = true, bool addEscapes = true, T)(T value) {
         static if (validate) {
-        // Validate that the string doesn't contain invalid characters
-        foreach(char c; value) {
-            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-                throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+            // Validate that the string doesn't contain invalid characters
+            foreach(char c; value) {
+                if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+                    throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+                }
             }
-        }
         }
     
         static if (addEscapes) {
