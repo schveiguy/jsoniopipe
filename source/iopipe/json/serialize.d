@@ -33,29 +33,36 @@ import std.format;
 
 struct MemberOptions {
     char quoteChar = '"';        // Use " or ' for quotes
-    bool spaceBeforeColon = false;  // "key" : vs "key":
-    bool spaceAfterColon = true;    // "key": vs "key" :
-    bool escapeKey = true;          // Whether to escape special chars in key
+    bool escapeKey = true;       // Whether to escape special chars in key
+    
+    enum ColonSpacing {
+        none,  // "key":"value"
+        after, // "key": "value"
+        both,  // "key" : "value"
+    }
+    
+    ColonSpacing colonSpacing = ColonSpacing.after;  // Default spacing
 }
 
-enum KeywordValue {
-    Null,
-    True, 
-    False,
+enum KeywordValue : string {
+    Null = "null",
+    True = "true",
+    False = "false",
     // JSON5 extensions
-    Infinity,
-    NegativeInfinity,
-    NaN
+    Infinity = "Infinity",
+    NegativeInfinity = "-Infinity",
+    NaN = "NaN"
 }
 
 struct JSONFormatter(Chain) {
 private:
     Chain* outputChain;
     int spacing = 0;
-    enum indent = 4;
+    int indent = 4;
+    MemberOptions memberOptions;
 
-    bool[] isFirstInObj;
-    bool[] isFirstInArray;
+    bool isFirstInObj;
+    bool isFirstInArray;
     size_t nWritten = 0;
 
     void putIndent() {
@@ -82,47 +89,55 @@ public:
         outputChain = &chain;
     }
 
+    this(ref Chain chain, int spacing, int indent) {
+        outputChain = &chain;
+        this.spacing = spacing;
+        this.indent = indent;
+    }
+
     void beginObject() {
-        isFirstInObj ~= true; 
+        isFirstInObj = true;
         ++spacing;
         putStr("{");
         putIndent();
     }
 
     void endObject() {
-        isFirstInObj = isFirstInObj[0..$-1];
         --spacing;
         putIndent();
         putStr("}");
     }
 
     void beginArray() {
-        isFirstInArray ~= true;
+        isFirstInArray = true;
         ++spacing;
         putStr("[");
         putIndent();
     }
 
     void endArray() {
-        isFirstInArray = isFirstInArray[0..$-1];
         --spacing;
         putIndent();
         putStr("]");
     }
 
-    void addMember(T)(T key, MemberOptions options = MemberOptions.init) {
+    void addMember(T)(T key) {
+        addMember(key, memberOptions);
+    }
+
+    void addMember(T)(T key, MemberOptions options) {
         
         if (key.length == 0 ) {
             // use for array elements
-            if (!isFirstInArray[$-1]) {
+            if (!isFirstInArray) {
                 putStr(", ");
                 putIndent();
             }
-            isFirstInArray[$-1] = false;
+            isFirstInArray = false;
             return;
         }
 
-        if (!isFirstInObj[$-1]) {
+        if (!isFirstInObj) {
             putStr(",");
             putIndent();
         }
@@ -140,15 +155,20 @@ public:
         } else {
             putStr(to!string(key));
         }
-        if (options.spaceBeforeColon) {
-            putStr(" ");
-        }
-        putStr(":");
-        if (options.spaceAfterColon) {
-            putStr(" ");
+        // Handle colon spacing based on enum value
+        final switch (options.colonSpacing) {
+            case MemberOptions.ColonSpacing.none:
+                putStr(":");           // "key":"value"
+                break;
+            case MemberOptions.ColonSpacing.after:
+                putStr(": ");          // "key": "value"  
+                break;
+            case MemberOptions.ColonSpacing.both:
+                putStr(" : ");         // "key" : "value"
+                break;
         }
 
-        isFirstInObj[$-1] = false;
+        isFirstInObj = false;
     }
 
     void beginString(char quoteChar = '"') {
@@ -189,33 +209,14 @@ public:
             }
             putStr(value);
         } else {
-            import std.format : format;
-            putStr(format(formatStr, value));
+            import std.format : formattedWrite;
+            formattedWrite(&putStr, formatStr, value);
         }
     }
 
     // null, true, false, inf, etc.
     void addKeywordValue(KeywordValue value) {
-        final switch (value) {
-        case KeywordValue.Null:
-            putStr("null");
-            break;
-        case KeywordValue.True:
-            putStr("true");
-            break;
-        case KeywordValue.False:
-            putStr("false");
-            break;
-        case KeywordValue.Infinity:
-            putStr("Infinity");
-            break;
-        case KeywordValue.NegativeInfinity:
-            putStr("-Infinity");
-            break;
-        case KeywordValue.NaN:
-            putStr("NaN");
-            break;
-        }
+        putStr(value);
     }
 
     void addWhitespace(T)(T data) {
