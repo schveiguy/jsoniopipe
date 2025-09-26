@@ -31,6 +31,226 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
+struct MemberOptions {
+    char quoteChar = '"';        // Use " or ' for quotes
+    bool escapeKey = true;       // Whether to escape special chars in key
+    
+    enum ColonSpacing {
+        none,  // "key":"value"
+        after, // "key": "value"
+        both,  // "key" : "value"
+    }
+    
+    ColonSpacing colonSpacing = ColonSpacing.after;  // Default spacing
+}
+
+enum KeywordValue : string {
+    Null = "null",
+    True = "true",
+    False = "false",
+    // JSON5 extensions
+    Infinity = "Infinity",
+    NegativeInfinity = "-Infinity",
+    NaN = "NaN"
+}
+
+struct JSONFormatter(Chain) {
+private:
+    Chain* outputChain;
+    int spacing = 0;
+    int indent = 4;
+    MemberOptions memberOptions;
+
+    bool isFirstInObj;
+    bool isFirstInArray;
+    size_t nWritten = 0;
+
+    void putIndent() {
+        outputChain.ensureElems(nWritten + indent * spacing + 1);
+        outputChain.window[nWritten] = '\n';
+        outputChain.window[nWritten + 1 .. nWritten + 1 + indent * spacing] = ' ';
+        nWritten += indent * spacing + 1;
+    }
+
+    void putStr(const(char)[] s) {
+        outputChain.ensureElems(nWritten + s.length);
+        outputChain.window[nWritten .. nWritten + s.length] = s;
+        nWritten += s.length;
+    }
+
+    private bool isValidJSONNumber(string str) {
+        import std.regex;
+        static auto numberRegex = regex(r"^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$");
+        return !str.matchFirst(numberRegex).empty;
+    }
+
+public:
+    this(ref Chain chain) {
+        outputChain = &chain;
+    }
+
+    this(ref Chain chain, int spacing, int indent) {
+        outputChain = &chain;
+        this.spacing = spacing;
+        this.indent = indent;
+    }
+
+    void beginObject() {
+        isFirstInObj = true;
+        ++spacing;
+        putStr("{");
+        putIndent();
+    }
+
+    void endObject() {
+        --spacing;
+        putIndent();
+        putStr("}");
+    }
+
+    void beginArray() {
+        isFirstInArray = true;
+        ++spacing;
+        putStr("[");
+        putIndent();
+    }
+
+    void endArray() {
+        --spacing;
+        putIndent();
+        putStr("]");
+    }
+
+    void addMember(T)(T key) {
+        addMember(key, memberOptions);
+    }
+
+    void addMember(T)(T key, MemberOptions options) {
+        
+        if (key.length == 0 ) {
+            // use for array elements
+            if (!isFirstInArray) {
+                putStr(", ");
+                putIndent();
+            }
+            isFirstInArray = false;
+            return;
+        }
+
+        if (!isFirstInObj) {
+            putStr(",");
+            putIndent();
+        }
+
+        static if (is(typeof(key) == string)) {
+            if (options.escapeKey) {
+                beginString(options.quoteChar);
+                addStringData(key);
+                endString(options.quoteChar);
+            } else {
+                beginString(options.quoteChar);
+                addStringData!(false, false)(key);
+                endString(options.quoteChar);
+            }
+        } else {
+            putStr(to!string(key));
+        }
+        // Handle colon spacing based on enum value
+        final switch (options.colonSpacing) {
+            case MemberOptions.ColonSpacing.none:
+                putStr(":");           // "key":"value"
+                break;
+            case MemberOptions.ColonSpacing.after:
+                putStr(": ");          // "key": "value"  
+                break;
+            case MemberOptions.ColonSpacing.both:
+                putStr(" : ");         // "key" : "value"
+                break;
+        }
+
+        isFirstInObj = false;
+    }
+
+    void beginString(char quoteChar = '"') {
+        putStr([quoteChar]);
+    }
+
+    // will automatically escape string data as needed.
+    void addStringData(bool validate = true, bool addEscapes = true, T)(T value) {
+        static if (validate) {
+            // Validate that the string doesn't contain invalid characters
+            foreach(char c; value) {
+                if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+                    throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+                }
+            }
+        }
+    
+        static if (addEscapes) {
+            import std.algorithm.iteration: substitute;
+            import std.conv: to;
+            auto escaped = value.substitute!(jsonEscapeSubstitutions!()).to!string;
+            putStr(escaped);
+        } else {
+            putStr(value);
+        }
+    }
+
+
+    void endString(char quoteChar = '"') {
+        putStr([quoteChar]);
+    }
+
+    // allow numeric types, or strings that are validated to be JSON numbers
+    void addNumericData(T)(T value, string formatStr = "%s") {
+        static if (is(T == string)) {
+            if (!isValidJSONNumber(value)) {
+                throw new JSONIopipeException(format("Invalid JSON number: %s", value));
+            }
+            putStr(value);
+        } else {
+            import std.format : formattedWrite;
+            formattedWrite(&putStr, formatStr, value);
+        }
+    }
+
+    // null, true, false, inf, etc.
+    void addKeywordValue(KeywordValue value) {
+        putStr(value);
+    }
+
+    void addWhitespace(T)(T data) {
+        foreach(char c; data) {
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                throw new JSONIopipeException(format("Invalid whitespace character: \\u%04X", cast(int)c));
+            }
+        }
+        putStr(data);
+    }
+
+    // // add a comment (JSON5 only), must be a complete comment (validated)
+    void addComment(T)(T commentData) {
+        static if (is(T == string)) {
+            import std.algorithm.searching : startsWith, endsWith;
+            if (!commentData.startsWith("//") && !commentData.startsWith("/*") && !commentData.endsWith("*/")) {
+                throw new JSONIopipeException(format("Invalid comment format: %s", commentData));
+            }
+        }
+        putStr(commentData);
+    }
+
+    void flushWritten() {
+        outputChain.release(nWritten);
+        nWritten = 0;
+    }
+
+    auto chain() {
+        return outputChain;
+    }
+
+}
+
+
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
     int maxDepthAvailable = 64;
@@ -1352,7 +1572,7 @@ void deserializeArray(T, JT, Policy)(
 
     // Parse array elements
     size_t elementCount = 0;
-    while(true) {
+    while(true) {   
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
 
