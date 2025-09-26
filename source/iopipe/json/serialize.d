@@ -734,6 +734,29 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
     }
 }
 
+unittest {
+    // Test emptyObject first
+    auto jsonStr1 = `{"emptyObject": {}}`;
+    auto jv1 = deserialize!(JSONValue!string)(jsonStr1);
+    
+    assert(jv1.type == JSONType.Obj);
+    assert("emptyObject" in jv1.object);
+    
+    auto emptyObj = jv1.object["emptyObject"];
+    assert(emptyObj.type == JSONType.Obj);
+    assert(emptyObj.object.length == 0);
+
+    auto jsonStr2 = `{"emptyArray": []}`;
+    auto jv2 = deserialize!(JSONValue!string)(jsonStr2);
+    
+    assert(jv2.type == JSONType.Obj);
+    assert("emptyArray" in jv2.object);
+    
+    auto emptyArr = jv2.object["emptyArray"];
+    assert(emptyArr.type == JSONType.Array);
+    assert(emptyArr.array.length == 0);
+}
+
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
@@ -1353,6 +1376,12 @@ void deserializeArray(T, JT, Policy)(
     // Parse array elements
     size_t elementCount = 0;
     while(true) {
+
+        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
+            // Handle empty array case
+            break;
+        }
+
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
 
