@@ -2370,15 +2370,23 @@ unittest
     }
 }
 
+version(unittest)
+{
+    bool check(Element)(Element item, JSONToken token, string expected)
+    {
+        if(item.token == token && item.data == expected)
+            return true;
+        import std.stdio;
+        writeln(item);
+        return false;
+    }
+}
+
 unittest
 {
     // test caching
     auto jsonData = q"{{"a": 1,"b": 123.456, "c": null}}";
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        return(item.token == token && item.data == expected);
-    }
     with(JSONToken)
     {
         assert(check(parser.next, ObjectStart, "{"));
@@ -2427,14 +2435,6 @@ unittest
 {
     string jsonData = `{"a" : [1, 2, 3], "b" : {"c" : {"d": 2, "e": 3}}, "f": 3}`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
 
     with(JSONToken)
     {
@@ -2454,14 +2454,6 @@ unittest
     auto jsonData = q"{{"a" : 1, "b" : {"c" : [1,2,3], "d" : { "hello" : "world" }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     parser.Element doSkip()
     {
         auto token = parser.skipItem();
@@ -2514,14 +2506,6 @@ unittest
     auto jsonData = q"{{'a' : 1, b : {c : [1,2,NaN,Infinity, 0x55, 55., .2], t : { false9: 'world' }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     auto idx = parser.index;
     parser.Element doSkip()
     {
@@ -2585,14 +2569,6 @@ unittest
     },
 }`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true, false, true));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     with(JSONToken)
     {
         assert(check(parser.next, Comment, "// This is a comment, it should be included\n"));
