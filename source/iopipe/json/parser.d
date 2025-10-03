@@ -391,8 +391,8 @@ struct JSONItem
      * Given an iopipe from which this token came, returns the exact window
      * data for the item.
      *
-     * WARNING:	A JSONItem can only safely call this function before the item is released with "releaseParsed".
-     * 		Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
+     * WARNING: A JSONItem can only safely call this function before the item is released with "releaseParsed".
+     *          Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
      */
     deprecated("Do not use underlying iopipe directly with JSONItem, always use the JSONPipe")
     auto data(Chain)(ref Chain c) if (!is(Chain == JSONPipe!(Args), Args...))
@@ -1957,9 +1957,21 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     JSONToken skipItem()
     {
-        size_t depth = 0;
-        // parse until we see the stack length get less than our current depth,
-        // until we see a comma, error, or end of stream.
+        leaveNestingLevel(0);
+        return peekSignificant();
+    }
+    
+
+    /** Seek until leaving the current object or array. 
+     * When next item will be ObjectStart or ArrayStart, will behave similar to JSONItem.skipItem(), but without consuming the ArrayEnd/ObjectEnd
+     
+     * Params:
+     *   depth = How many levels to leave.
+     * Returns:
+     *   The last item consumed, so either a closing ArrayEnd or ObjectEnd or EOF
+     */
+    JSONToken leaveNestingLevel(ulong depth=1)
+    { 
         while(true)
         {
             auto item = peek();
@@ -1971,18 +1983,16 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
                 break;
             case ObjectEnd:
             case ArrayEnd:
-                if(!depth)
+                // (depth == 0) branches only possible when called as leaveNestingLevel(0) and no ObjectStart/ArrayStart has been encountered yet
+                if(depth == 0)
                 {
                     // this is the end of the *parent* object or array. Don't skip it.
                     return item;
                 }
                 else if(--depth == 0)
                 {
-                    // at the end of the current object. Skip the end piece, and move on.
-                    auto n = nextSignificant;
-                    if(n.token == Error)
-                        return n.token;
-                    return peekSignificant;
+                    // at the end of the current object. Consume the end piece
+                    return nextSignificant.token;
                 }
                 break;
             case Comma:
@@ -1999,45 +2009,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             cast(void)next; // skip this item
         }
     }
-    
 
-    /** Seek until leaving the current object or array. 
-     * When next item will be ObjectStart or ArrayStart, will behave similar to JSONItem.skipItem(), but without consuming the ArrayEnd/ObjectEnd
-     
-     * Params:
-     * 	 depth = How many levels to leave. 1-indexed
-     * Returns:
-     * 	 The last item consumed, so either a closing ArrayEnd or ObjectEnd or EOF
-     */
-    JSONItem leaveNestingLevel(ulong depth=1)
-    { 
-        assert(depth >= 1, "Leaving less than 0 level would make no sense.");
-
-        with(JSONToken) for(auto item = next;;item = next)
-            switch(item.token)
-            {
-                case ArrayStart:
-                case ObjectStart:
-                    depth++;
-                    break;
-                case ArrayEnd:
-                case ObjectEnd:
-                    if(depth == 1)
-                    {
-                        // Do not consume so caller can differentiate between Array and Object
-                        return item;
-                    }
-                    depth--;
-                    break;
-                case EOF:
-                    return item;
-                default:
-                    break;
-            }
-        assert(0, "Impossible");
-    }
-    
-    
 
     /// Consume any spaces and/or comments. Returns the next token after those are skipped.
     JSONToken peekSignificant()
@@ -2466,11 +2438,11 @@ unittest
     {
         assert(parser.parseTo("b", "c", "d"));
         assert(check(parser.next, Number, "2"));
-        assert(check(parser.leaveNestingLevel(2), ObjectEnd, "}"));
+        assert(parser.leaveNestingLevel(2) == ObjectEnd);
         assert(check(parser.next, Comma, ","));
         assert(check(parser.next, String, "f"));
-        assert(check(parser.leaveNestingLevel, ObjectEnd, "}"));
-        assert(check(parser.leaveNestingLevel, EOF, ""));
+        assert(parser.leaveNestingLevel == ObjectEnd);
+        assert(parser.leaveNestingLevel == EOF);
     }
 }
 
