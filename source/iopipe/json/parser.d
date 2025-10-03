@@ -2425,9 +2425,9 @@ unittest
 {
     string jsonData = `{"a" : [1, 2, 3], "b" : {"c" : {"d": 2, "e": 3}}, "f": 3}`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(JSONItem item, JSONToken token, string expected)
+    bool check(parser.Element item, JSONToken token, string expected)
     {
-        if(item.token == token && item.data(parser.chain) == expected)
+        if(item.token == token && item.data == expected)
             return true;
         import std.stdio;
         writeln(item);
