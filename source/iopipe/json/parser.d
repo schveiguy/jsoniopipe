@@ -1957,7 +1957,9 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     JSONToken skipItem()
     {
-        leaveNestingLevel(0);
+        auto token = leaveNestingLevel(0);
+        if(token == JSONToken.Error)
+            return token;
         return peekSignificant();
     }
     
