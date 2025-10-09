@@ -1962,18 +1962,25 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             return token;
         return peekSignificant();
     }
-    
 
-    /** Seek until leaving the current object or array. 
-     * When next item will be ObjectStart or ArrayStart, will behave similar to JSONItem.skipItem(), but without consuming the ArrayEnd/ObjectEnd
-     
+    /**
+     * Advance parser until `depth` compound objects (array or object) have been left.
+     * The closing token (ArrayEnd, ObjectEnd) is consumed and returned.
+     *
+     * If an error is encountered, it is returned immediately
+     *
+     * Note: When called with `depth: 0`, it will just skip the current value.
+     * The subsequent token, either ArrayEnd, ObjectEnd or Comma, will not be
+     * consumed, but it will still be returned.
+     *
      * Params:
      *   depth = How many levels to leave.
      * Returns:
-     *   The last item consumed, so either a closing ArrayEnd or ObjectEnd or EOF
+     *   The last item consumed, so either a closing ArrayEnd, ObjectEnd, EOF or
+     *   if called with `depth: 0`, a Comma.
      */
     JSONToken leaveNestingLevel(ulong depth=1)
-    { 
+    {
         while(true)
         {
             auto item = peek();
@@ -1989,6 +1996,9 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
                 if(depth == 0)
                 {
                     // this is the end of the *parent* object or array. Don't skip it.
+
+                    // Can't return the previous item, since it's possible the first
+                    // element we encounter might be ObjectEnd
                     return item;
                 }
                 else if(--depth == 0)
