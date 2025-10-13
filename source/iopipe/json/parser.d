@@ -391,8 +391,8 @@ struct JSONItem
      * Given an iopipe from which this token came, returns the exact window
      * data for the item.
      *
-     * WARNING:	A JSONItem can only safely call this function before the item is released with "releaseParsed".
-     * 		Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
+     * WARNING: A JSONItem can only safely call this function before the item is released with "releaseParsed".
+     *          Additionally, the returned string gets invalidated on calls to peek/next/releaseParsed.
      */
     deprecated("Do not use underlying iopipe directly with JSONItem, always use the JSONPipe")
     auto data(Chain)(ref Chain c) if (!is(Chain == JSONPipe!(Args), Args...))
@@ -824,7 +824,7 @@ unittest
     }
 
     testParse!false(q"{"abcdef"}", false);
-    // testParse!false(q"{"abcdef}", true); // use different string here to molify github syntax highlighting
+    // Use different string here to mollify github syntax highlighting
     testParse!false(`"abcdef`, true);
     testParse!true(q"{"abcdef"}".dup, false);
     testParse!true(q"{"abcdef\n"}".dup, false, JSONParseHint.InPlace, 7, "abcdef\n");
@@ -1957,9 +1957,30 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      */
     JSONToken skipItem()
     {
-        size_t depth = 0;
-        // parse until we see the stack length get less than our current depth,
-        // until we see a comma, error, or end of stream.
+        auto token = leaveNestingLevel(0);
+        if(token == JSONToken.Error)
+            return token;
+        return peekSignificant();
+    }
+
+    /**
+     * Advance parser until `depth` compound objects (array or object) have been left.
+     * The closing token (ArrayEnd, ObjectEnd) is consumed and returned.
+     *
+     * If an error is encountered, it is returned immediately
+     *
+     * Note: When called with `depth: 0`, it will just skip the current value.
+     * The subsequent token, either ArrayEnd, ObjectEnd or Comma, will not be
+     * consumed, but it will still be returned.
+     *
+     * Params:
+     *   depth = How many levels to leave.
+     * Returns:
+     *   The last item processed, which can be a closing `ArrayEnd`, `ObjectEnd`,
+     *   `EOF`, or a `Comma` (only if `depth` is 0).
+     */
+    JSONToken leaveNestingLevel(ulong depth=1)
+    {
         while(true)
         {
             auto item = peek();
@@ -1971,18 +1992,19 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
                 break;
             case ObjectEnd:
             case ArrayEnd:
-                if(!depth)
+                // (depth == 0) branches only possible when called as leaveNestingLevel(0) and no ObjectStart/ArrayStart has been encountered yet
+                if(depth == 0)
                 {
                     // this is the end of the *parent* object or array. Don't skip it.
+
+                    // Can't return the previous item, since it's possible the first
+                    // element we encounter might be ObjectEnd
                     return item;
                 }
                 else if(--depth == 0)
                 {
-                    // at the end of the current object. Skip the end piece, and move on.
-                    auto n = nextSignificant;
-                    if(n.token == Error)
-                        return n.token;
-                    return peekSignificant;
+                    // at the end of the current object. Consume the end piece
+                    return nextSignificant.token;
                 }
                 break;
             case Comma:
@@ -1999,6 +2021,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             cast(void)next; // skip this item
         }
     }
+
 
     /// Consume any spaces and/or comments. Returns the next token after those are skipped.
     JSONToken peekSignificant()
@@ -2357,15 +2380,23 @@ unittest
     }
 }
 
+version(unittest)
+{
+    bool check(Element)(Element item, JSONToken token, string expected)
+    {
+        if(item.token == token && item.data == expected)
+            return true;
+        import std.stdio;
+        writeln(item);
+        return false;
+    }
+}
+
 unittest
 {
     // test caching
     auto jsonData = q"{{"a": 1,"b": 123.456, "c": null}}";
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        return(item.token == token && item.data == expected);
-    }
     with(JSONToken)
     {
         assert(check(parser.next, ObjectStart, "{"));
@@ -2409,20 +2440,30 @@ unittest
     }
 }
 
+// leaveNestingLevel
+unittest
+{
+    string jsonData = `{"a" : [1, 2, 3], "b" : {"c" : {"d": 2, "e": 3}}, "f": 3}`;
+    auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
+
+    with(JSONToken)
+    {
+        assert(parser.parseTo("b", "c", "d"));
+        assert(check(parser.next, Number, "2"));
+        assert(parser.leaveNestingLevel(2) == ObjectEnd);
+        assert(check(parser.next, Comma, ","));
+        assert(check(parser.next, String, "f"));
+        assert(parser.leaveNestingLevel == ObjectEnd);
+        assert(parser.leaveNestingLevel == EOF);
+    }
+}
+
 unittest
 {
     // test skipping items
     auto jsonData = q"{{"a" : 1, "b" : {"c" : [1,2,3], "d" : { "hello" : "world" }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     parser.Element doSkip()
     {
         auto token = parser.skipItem();
@@ -2475,14 +2516,6 @@ unittest
     auto jsonData = q"{{'a' : 1, b : {c : [1,2,NaN,Infinity, 0x55, 55., .2], t : { false9: 'world' }}}}";
 
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     auto idx = parser.index;
     parser.Element doSkip()
     {
@@ -2546,14 +2579,6 @@ unittest
     },
 }`;
     auto parser = jsonData.jsonTokenizer!(ParseConfig(false, true, false, true));
-    bool check(parser.Element item, JSONToken token, string expected)
-    {
-        if(item.token == token && item.data == expected)
-            return true;
-        import std.stdio;
-        writeln(item);
-        return false;
-    }
     with(JSONToken)
     {
         assert(check(parser.next, Comment, "// This is a comment, it should be included\n"));
