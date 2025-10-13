@@ -1976,8 +1976,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
      * Params:
      *   depth = How many levels to leave.
      * Returns:
-     *   The last item consumed, so either a closing ArrayEnd, ObjectEnd, EOF or
-     *   if called with `depth: 0`, a Comma.
+     *   The last item processed, which can be a closing `ArrayEnd`, `ObjectEnd`,
+     *   `EOF`, or a `Comma` (only if `depth` is 0).
      */
     JSONToken leaveNestingLevel(ulong depth=1)
     {
