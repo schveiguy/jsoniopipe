@@ -2049,18 +2049,23 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
 
     /**
-     * Parse until it finds the member with the specified key. The 
-     * assumption is that the current item is an object start.
-    
+     * Parse until it finds a specific member/submember. The assumption is that
+     * the current item is an object start.
+
+     * Supported member types are strings, which represent object-keys and
+     * ulongs, which represent 0-indexed array indices.
+     * It is also possible to pass in a ReleasePolicy as the first argument.
+     * The default is `ReleasePolicy.Never`.
+
      * Returns true if the specified submember was found, and the parser is
      * queued to parse the value of that member.
-    
+
      * Returns false if the object was searched, but the submember could not be
      * found. In this case, the stream is left in a location that is
      * potentially partly advanced. Use caching to rewind if you don't wish to
      * lose the current position.
     
-     * Also returns false if this is not an object without consuming anything.
+     * Also returns false if this is not an object (without consuming anything).
      */
     bool parseTo(string key)
     {
@@ -2098,11 +2103,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return true;
     }
 
-    /** From an ArrayStart, consume until the specified index.
-     
-     * Returns false on error or EOF. The parser will have consumed the comma after item (idx-1) and will point to the beginning of the next element.
-     * In case of error, the unexpected element will not have been consumed.
-     */
+    /// ditto
     bool parseTo(ulong idx)
     {
         if(peek != JSONToken.ArrayStart)
@@ -2117,14 +2118,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         return true;
     }
 
-    /**
-     * Seek to a position in the json object. Accepts string keys and integral array indexes.
-     *
-     * An argument of type ReleasePolicy is also allowed. Call with param ReleasePolicy.afterMembers
-     * as first argument to make sure items are released from the chain during seeking. By default,
-     * release isn't called.
-     */
-    bool parseTo(Ts...)(Ts submembers) if(Ts.length >= 2)
+    /// ditto
+    bool parseTo(string[] submembers...){
+        foreach(key; submembers){
+            if(!parseTo(key))
+                return false;
+        }
+        return true;
+    }
+
+    /// ditto
+    bool parseTo(Ts...)(Ts submembers)
     {
         ReleasePolicy relPol = ReleasePolicy.never;
         bool found = true;
