@@ -18,7 +18,6 @@
  * Authors: Steven Schveighoffer
 */
 module iopipe.json.parser;
-public import iopipe.json.common;
 import iopipe.traits;
 import iopipe.bufpipe;
 import iopipe.buffer;
@@ -2054,8 +2053,6 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
      * Supported member types are strings, which represent object-keys and
      * ulongs, which represent 0-indexed array indices.
-     * It is also possible to pass in a ReleasePolicy as the first argument.
-     * The default is `ReleasePolicy.Never`.
 
      * Returns true if the specified submember was found, and the parser is
      * queued to parse the value of that member.
@@ -2130,19 +2127,14 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     /// ditto
     bool parseTo(Ts...)(Ts submembers)
     {
-        ReleasePolicy relPol = ReleasePolicy.never;
         bool found = true;
 	static foreach(sub; submembers){{
             alias T = typeof(sub);
-            static if(is(T == ReleasePolicy))
-	    {
-                relPol = sub;
-            }
-            else static if(is(T == string))
+            static if(is(T == string))
             {
 		found &= parseTo(sub);
             }
-            else static if(isIntegral!T && !is(T == ReleasePolicy))
+            else static if(isIntegral!T)
             {
                 assert(sub >= 0);
 		found &= parseTo(cast(ulong)sub);
@@ -2151,8 +2143,6 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             {
                 static assert(false, T.stringof ~ ` not supported. Only strings for keys and integral types for indexes are allowed`);
             }
-            if(relPol == ReleasePolicy.afterMembers)
-                flushCache;
             if(!found)
                 return false;
 	}}
