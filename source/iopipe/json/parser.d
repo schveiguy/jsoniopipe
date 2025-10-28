@@ -2050,54 +2050,104 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     /**
      * Parse until it finds a specific member/submember. The assumption is that
      * the current item is an object start.
-    
+
+     * Supported member types are strings, which represent object-keys and
+     * ulongs, which represent 0-indexed array indices.
+
      * Returns true if the specified submember was found, and the parser is
      * queued to parse the value of that member.
-    
+
      * Returns false if the object was searched, but the submember could not be
      * found. In this case, the stream is left in a location that is
      * potentially partly advanced. Use caching to rewind if you don't wish to
      * lose the current position.
     
-     * Also returns false if this is not an object.
+     * Also returns false if this is not an object (without consuming anything).
      */
-    bool parseTo(string[] submember...)
+    bool parseTo(string key)
     {
         import std.algorithm : equal;
-        while(submember.length > 0)
+        // jump into the first member.
+        if(peek != JSONToken.ObjectStart)
+            return false;
+        cast(void)next; // skip the object start
+        auto nt = peekSignificant();
+        if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
+            return false;
+        auto item = next;
+        while(!item.data.equal(key))
         {
-            // jump into the first member.
-            if(peek != JSONToken.ObjectStart)
+            cast(void)skipItem();
+            auto nextItem = peekSignificant();
+            if(nextItem == JSONToken.ObjectEnd)
                 return false;
-            cast(void)next; // skip the object start
-            auto nt = peekSignificant();
-            if(nt != JSONToken.String && (!config.JSON5 || nt != JSONToken.Symbol))
-                return false;
-            auto item = next;
-            while(!item.data().equal(submember[0]))
+            else if(nextItem == JSONToken.Comma)
             {
-                cast(void)skipItem();
-                auto nextItem = peekSignificant();
-                if(nextItem == JSONToken.ObjectEnd)
-                    return false;
-                else if(nextItem == JSONToken.Comma)
-                {
-                    cast(void)next; // skip the comma
-                    item = next; // load the next thing
-                    if(config.JSON5 && item.token == JSONToken.ObjectEnd)
-                        return false;
-                }
-                else
-                    // something went wrong.
+                cast(void)next; // skip the comma
+                item = next; // load the next thing
+                if(config.JSON5 && item.token == JSONToken.ObjectEnd)
                     return false;
             }
-            // found the item
-            if(peekSignificant() != JSONToken.Colon)
+            else
+                // something went wrong.
                 return false;
-            item = next;
-            submember = submember[1 .. $];
         }
+        // found the item
+        if(peekSignificant() != JSONToken.Colon)
+            return false;
+        item = next;
 
+        return true;
+    }
+
+    /// ditto
+    bool parseTo(ulong idx)
+    {
+        if(peek != JSONToken.ArrayStart)
+            return false;
+        cast(void)next;
+        for(ulong i = 0; i < idx; i++){
+            auto nextToken = skipItem();
+            if(nextToken != JSONToken.Comma)
+                return false;
+            cast(void)next(); //consume the comma
+        }
+        return true;
+    }
+
+    /// ditto
+    bool parseTo(string[] submembers...)
+    {
+        foreach(key; submembers)
+        {
+            if(!parseTo(key))
+                return false;
+        }
+        return true;
+    }
+
+    /// ditto
+    bool parseTo(Ts...)(Ts submembers)
+    {
+        static foreach(sub; submembers)
+        {{
+            alias T = typeof(sub);
+            static if(is(T == string))
+            {
+                if(!parseTo(sub))
+                    return false;
+            }
+            else static if(isIntegral!T)
+            {
+                assert(sub >= 0);
+                if(!parseTo(cast(ulong)sub))
+                    return false;
+            }
+            else
+            {
+                static assert(false, T.stringof ~ ` not supported. Only strings for keys and integral types for indexes are allowed`);
+            }
+        }}
         return true;
     }
 
@@ -2507,6 +2557,10 @@ unittest
     assert(check(parser.next, JSONToken.ObjectEnd, "}"));
     assert(check(parser.next, JSONToken.EOF, ""));
     assert(parser._chain.pos == jsonData.length);
+
+    parser.index = idx;
+    assert(parser.parseTo("b", "c", 1));
+    assert(check(parser.next, JSONToken.Number, "2"));
 }
 
 // JSON5 tests!
