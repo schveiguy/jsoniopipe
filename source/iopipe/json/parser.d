@@ -2116,8 +2116,10 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     }
 
     /// ditto
-    bool parseTo(string[] submembers...){
-        foreach(key; submembers){
+    bool parseTo(string[] submembers...)
+    {
+        foreach(key; submembers)
+        {
             if(!parseTo(key))
                 return false;
         }
@@ -2128,16 +2130,17 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     bool parseTo(Ts...)(Ts submembers)
     {
         bool found = true;
-	static foreach(sub; submembers){{
+        static foreach(sub; submembers)
+        {{
             alias T = typeof(sub);
             static if(is(T == string))
             {
-		found &= parseTo(sub);
+                found &= parseTo(sub);
             }
             else static if(isIntegral!T)
             {
                 assert(sub >= 0);
-		found &= parseTo(cast(ulong)sub);
+                found &= parseTo(cast(ulong)sub);
             }
             else
             {
@@ -2145,8 +2148,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
             }
             if(!found)
                 return false;
-	}}
-	return true;
+        }}
+        return true;
     }
 
     /// where are we in the buffer
