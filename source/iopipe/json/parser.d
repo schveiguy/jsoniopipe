@@ -2129,25 +2129,24 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
     /// ditto
     bool parseTo(Ts...)(Ts submembers)
     {
-        bool found = true;
         static foreach(sub; submembers)
         {{
             alias T = typeof(sub);
             static if(is(T == string))
             {
-                found &= parseTo(sub);
+                if(!parseTo(sub))
+                    return false;
             }
             else static if(isIntegral!T)
             {
                 assert(sub >= 0);
-                found &= parseTo(cast(ulong)sub);
+                if(!parseTo(cast(ulong)sub))
+                    return false;
             }
             else
             {
                 static assert(false, T.stringof ~ ` not supported. Only strings for keys and integral types for indexes are allowed`);
             }
-            if(!found)
-                return false;
         }}
         return true;
     }
