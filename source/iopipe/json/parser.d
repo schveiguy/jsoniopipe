@@ -2108,7 +2108,7 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         cast(void)next;
         for(ulong i = 0; i < idx; i++){
             auto nextToken = skipItem();
-            if(nextToken != JSONToken.Comma || nextToken == JSONToken.EOF)
+            if(nextToken != JSONToken.Comma)
                 return false;
             cast(void)next(); //consume the comma
         }
