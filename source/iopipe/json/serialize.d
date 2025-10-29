@@ -388,6 +388,74 @@ enum ignore;
  */
 enum optional;
 
+unittest {
+    
+    struct TrackingOptionalPolicy {
+    
+      bool[string] deserializedFields;
+      
+      auto onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
+          deserializedFields = null;
+          return .onObjectBegin(this, tokenizer, item);
+      }
+      
+      void onField(JT, T, Element, C)(ref JT tokenizer, ref T item, Element key, ref C context) {
+          .onField(this, tokenizer, item, key, context);
+          deserializedFields[key.data] = true;
+      }
+      
+      bool wasDeserialized(string fieldName) {
+          return (fieldName in deserializedFields) !is null;
+      }
+    }
+
+    struct Numbers {
+        @optional int a;
+        int b;
+        int c;
+    }
+
+    auto data = `{"b": 15, "c": 30}`;
+
+    auto policy = TrackingOptionalPolicy();
+    auto numbers = deserialize!Numbers(data, policy);
+    assert(numbers.b == 15);
+    assert(numbers.c == 30);
+    assert(!policy.wasDeserialized("a"));
+
+    auto arrayData = `[{"b": 1, "c": 2}, {"a": 0, "b": 3, "c": 4}]`;
+    auto numbersArray = deserialize!(Numbers[])(arrayData, policy);
+
+    assert(numbersArray.length == 2);
+    assert(numbersArray[0].b == 1);
+    assert(numbersArray[0].c == 2);
+    assert(!policy.wasDeserialized("a"));
+    assert(numbersArray[1].a == 0);
+    assert(numbersArray[1].b == 3);
+    assert(numbersArray[1].c == 4);
+
+    struct Person {
+        string name;
+        @optional int age;
+        Numbers numbers;
+    }
+
+    auto nestedData = `{
+        "name": "John",
+        "numbers": {
+            "b": 10,
+            "c": 20
+        }
+    }`;
+
+    auto person = deserialize!(Person)(nestedData);
+    assert(person.name == "John");
+    assert(person.numbers.b == 10);
+    assert(person.numbers.c == 20);
+    assert(!policy.wasDeserialized("age"));
+    assert(!policy.wasDeserialized("a"));
+}
+
 /**
  * UDA: if on an enum, this serializes the enum as the base type instead of the
  * enum name (default).
