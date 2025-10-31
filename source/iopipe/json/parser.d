@@ -2049,20 +2049,29 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
 
     /**
      * Parse until it finds a specific member/submember. The assumption is that
-     * the current item is an object start.
-
-     * Supported member types are strings, which represent object-keys and
-     * ulongs, which represent 0-indexed array indices.
-
-     * Returns true if the specified submember was found, and the parser is
-     * queued to parse the value of that member.
-
-     * Returns false if the object was searched, but the submember could not be
-     * found. In this case, the stream is left in a location that is
-     * potentially partly advanced. Use caching to rewind if you don't wish to
-     * lose the current position.
-    
-     * Also returns false if this is not an object (without consuming anything).
+     * the current item is an object or array start (depending on the target
+     * key type).
+     *
+     * Params:
+     *    key - String member to parse to. Current stream is assumed to be
+     *          aligned to an object start.
+     *    idx - Index of the element to parse to. Current stream is assumed to
+     *          be aligned to an array start.
+     *    submembers - List of nested members to parse to. Similar to single
+     *          `key` or `idx`, but recurses through all the aggregates of the
+     *          stream for each item in the arugments.
+     *
+     * Returns: true if the specified key or index was found, and the parser is
+     *    aligned to parse the value of that member.
+     *
+     * Returns: false if the stream was searched, but the target could not be
+     *    found. In this case, the stream is left in a location that is
+     *    potentially partly advanced. Use caching to rewind if you don't wish
+     *    to lose the current position.
+     *
+     * Note: if any of the containers were not as expected (e.g. a string key
+     * was passed, but the aggregate at that point was an array), the return
+     * value will be false.
      */
     bool parseTo(string key)
     {
