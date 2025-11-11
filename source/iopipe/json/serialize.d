@@ -520,6 +520,20 @@ auto jsonExpect(Item)(Item item, JSONToken expectedToken, string msg="Error", st
     return item;
 }
 
+/**
+ * Get the next significant item while skipping any comma. This allows code to
+ * not care about the details of whether the stream is a JSON or JSON5 stream.
+ * The JSONPipe will validate the next token either way, so this just gets rid
+ * of the special case code.
+ */
+auto skipComma(JT)(ref JT tokenizer)
+{
+    auto item = tokenizer.nextSignificant();
+    if(item.token != JSONToken.Comma)
+        return item;
+    return tokenizer.nextSignificant;
+}
+
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == enum))
 {
     // enums are special, we can serialize them based on the enum name, or the
@@ -772,17 +786,6 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
     jsonItem = tokenizer.nextSignificant();
     while(jsonItem.token != JSONToken.ObjectEnd)
     {
-        if(jsonItem.token == JSONToken.Comma)
-        {
-            jsonItem = tokenizer.nextSignificant();
-            static if(tokenizer.config.JSON5)
-            {
-                // JSON5 allows trailing commas
-                if(jsonItem.token == JSONToken.ObjectEnd)
-                    break;
-            }
-        }
-
         static if(tokenizer.config.JSON5)
         {
             if(jsonItem.token != JSONToken.String && jsonItem.token != JSONToken.Symbol)
@@ -858,7 +861,8 @@ OBJ_MEMBER_SWITCH:
         {
             if(relPol == ReleasePolicy.afterMembers)
                 tokenizer.releaseParsed();
-            jsonItem = tokenizer.nextSignificant();
+            // skip any comma in the stream
+            jsonItem = tokenizer.skipComma();
         }
     }
     // ensure all members visited
@@ -1268,26 +1272,10 @@ void deserializeObject(T, JT, Policy)(
         .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
     auto context = policy.onObjectBegin(tokenizer, item);
 
-    if (tokenizer.peekSignificant() == JSONToken.ObjectEnd) {
-        tokenizer.nextSignificant
-          .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
-        return; // empty object, nothing to do
-    }
     // Process fields
     auto jsonItem = tokenizer.nextSignificant();
-    while(true)
+    while(jsonItem.token != JSONToken.ObjectEnd)
     {
-        if(jsonItem.token == JSONToken.Comma)
-        {
-            static if(tokenizer.config.JSON5)
-            {
-                if(tokenizer.peekSignificant() == JSONToken.ObjectEnd)
-                    break;
-            }
-            jsonItem = tokenizer.nextSignificant();
-            continue;
-        }
-
         // Validate key
         static if(tokenizer.config.JSON5)
         {
@@ -1305,19 +1293,12 @@ void deserializeObject(T, JT, Policy)(
 
         policy.onField(tokenizer, item, key, context);
 
-        if (tokenizer.peekSignificant() == JSONToken.ObjectEnd)
-        {
-            // If we hit the end of the object, break
-            break;
-        }
-
-        jsonItem = tokenizer.nextSignificant();
+        // skip any comma between elements
+        jsonItem = tokenizer.skipComma();
     }
 
     // End deserialization
     policy.onObjectEnd(tokenizer, item, context);
-    tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ObjectEnd, "Parsing " ~ T.stringof);
 }
 
 void deserializeImpl(T, JT, Policy)(
@@ -1552,6 +1533,20 @@ unittest
     assert(persons[0].age == 30);
     assert(persons[1].name == "Bob");
     assert(persons[1].age == 25);
+}
+
+unittest
+{
+    import std.exception;
+    // test parsing an empty object with required fields (this should fail)
+    static struct Item {
+        int x;
+    }
+
+    auto jsonStr = `{}`;
+    assertThrown!JSONIopipeException(
+        deserialize!(Item)(jsonStr)
+    );
 }
 
 void deserialize(T, JT, Policy)(
