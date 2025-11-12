@@ -1363,6 +1363,16 @@ void deserializeImpl(T, JT, Policy)(
     }
 }
 
+auto peekSkipComma(JT)(ref JT tokenizer)
+{
+    auto token = tokenizer.peekSignificant();
+    if(token != JSONToken.Comma)
+        return token;
+    // consume the comma
+    cast(void)tokenizer.nextSignificant;
+    return tokenizer.peekSignificant();
+}
+
 void deserializeArray(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
@@ -1375,31 +1385,9 @@ void deserializeArray(T, JT, Policy)(
 
     // Parse array elements
     size_t elementCount = 0;
-    while(true) {
-
-        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
-            // Handle empty array case
-            break;
-        }
-
+    while(tokenizer.peekSkipComma() != JSONToken.ArrayEnd) {
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
-
-        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
-            // If we hit the end of the array, break
-            break;
-        }
-
-        // verify and consume the comma
-        jsonItem = tokenizer.nextSignificant()
-                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
-
-        static if (tokenizer.config.JSON5)
-        {
-            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
-                break;
-        }
-
     }
 
     // verify we got an end array element
