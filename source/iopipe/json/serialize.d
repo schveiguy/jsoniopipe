@@ -748,6 +748,29 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
     }
 }
 
+unittest {
+    // Test emptyObject first
+    auto jsonStr1 = `{"emptyObject": {}}`;
+    auto jv1 = deserialize!(JSONValue!string)(jsonStr1);
+    
+    assert(jv1.type == JSONType.Obj);
+    assert("emptyObject" in jv1.object);
+    
+    auto emptyObj = jv1.object["emptyObject"];
+    assert(emptyObj.type == JSONType.Obj);
+    assert(emptyObj.object.length == 0);
+
+    auto jsonStr2 = `{"emptyArray": []}`;
+    auto jv2 = deserialize!(JSONValue!string)(jsonStr2);
+    
+    assert(jv2.type == JSONType.Obj);
+    assert("emptyArray" in jv2.object);
+    
+    auto emptyArr = jv2.object["emptyArray"];
+    assert(emptyArr.type == JSONType.Array);
+    assert(emptyArr.array.length == 0);
+}
+
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
     // expect an object in JSON. We want to deserialize the JSON data
@@ -1321,6 +1344,16 @@ void deserializeImpl(T, JT, Policy)(
     }
 }
 
+auto peekSkipComma(JT)(ref JT tokenizer)
+{
+    auto token = tokenizer.peekSignificant();
+    if(token != JSONToken.Comma)
+        return token;
+    // consume the comma
+    cast(void)tokenizer.nextSignificant;
+    return tokenizer.peekSignificant();
+}
+
 void deserializeArray(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
@@ -1333,25 +1366,9 @@ void deserializeArray(T, JT, Policy)(
 
     // Parse array elements
     size_t elementCount = 0;
-    while(true) {
+    while(tokenizer.peekSkipComma() != JSONToken.ArrayEnd) {
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
-
-        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
-            // If we hit the end of the array, break
-            break;
-        }
-
-        // verify and consume the comma
-        jsonItem = tokenizer.nextSignificant()
-                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
-
-        static if (tokenizer.config.JSON5)
-        {
-            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
-                break;
-        }
-
     }
 
     // verify we got an end array element
