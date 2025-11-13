@@ -695,21 +695,21 @@ private template AllIgnoredMembers(T)
         enum AllIgnoredMembers = staticMap!(ApplyRight!(getUDAs, IgnoredMembers), T, BaseClassesTuple!T);
 }
 
-/// Check if JT is passed by ref for the case where fromJSON already successfully compiler with a policy via IFTI
+private enum isJTRef(alias InstantiatedF) = cast(bool) (ParameterStorageClassTuple!InstantiatedF[0] & ParameterStorageClass.ref_);
+
+/// Check if JT is passed by ref for the case where fromJSON already successfully compiled with a policy via IFTI
 private template checkRef(alias FromJSON, JT, P)
 {
-    enum isRef(string s) = s == "ref";
-    static if(__traits(compiles,FromJSON!(P,JT)))
-        enum checkRef = anySatisfy!(isRef, __traits(getParameterStorageClasses, FromJSON!(P, JT), 0));
-    else static if(__traits(compiles,FromJSON!(JT,P)))
-        enum checkRef = anySatisfy!(isRef, __traits(getParameterStorageClasses, FromJSON!(JT,P), 0));
+    static if(__traits(compiles,FromJSON!(P, JT)))
+        enum checkRef = isJTRef!(FromJSON!(P, JT));
+    else static if(__traits(compiles,FromJSON!(JT, P)))
+        enum checkRef = isJTRef!(FromJSON!(JT, P));
     else
         static assert(0, "Precondition violated. FromJSON must take template parameters JT and P in any order");
 }
 
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    enum isRef(string s) = s == "ref";
     static if(__traits(compiles, T.fromJSON(tokenizer, policy))) {
         // use policy object
         static assert(checkRef!(T.fromJSON, JT, P),
@@ -717,12 +717,12 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         item = T.fromJSON(tokenizer, policy);
     } else static if(is(Parameters!(T.fromJSON!JT)[1] == ReleasePolicy)) {
         // use ReleasePolicy
-         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+         static assert(isJTRef!(T.fromJSON!JT),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON(tokenizer, policy.relPol);
     } else static if(__traits(compiles, T.fromJSON(tokenizer))) {
         // use one parameter only
-         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+         static assert(isJTRef!(T.fromJSON!JT),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON(tokenizer);
     } else {
