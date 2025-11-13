@@ -727,6 +727,7 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
         item = T.fromJSON(tokenizer);
     } else {
         // This will fail to compile. Try to nudge the user to use a policy
+        pragma(msg, "Hint: fromJSON also doesn't compile with parameters (JSONTokenizer, ReleasePolicy) or  or just with (JSONTokenizer)");
         item = T.fromJSON(tokenizer, policy);
     }
 }
@@ -2514,7 +2515,7 @@ unittest
             enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
             jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
             auto val = tokenizer.nextSignificant;
-	    // ObjectEnd must be consumed by fromJSON
+            // ObjectEnd must be consumed by fromJSON
             jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
             return S(val.data(tokenizer.chain).to!int);
         }
@@ -2532,8 +2533,8 @@ unittest
         int x;
         static S fromJSON(JT, P)(JT tokenizer, ref P policy)
         {
-		int dontcare = 0;
-		return S(dontcare);
+            int dontcare = 0;
+            return S(dontcare);
         }
     }
     auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
