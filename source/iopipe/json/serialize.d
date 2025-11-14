@@ -705,7 +705,7 @@ private template checkRef(alias FromJSON, JT, P)
     else static if(__traits(compiles,FromJSON!(JT, P)))
         enum checkRef = isJTRef!(FromJSON!(JT, P));
     else
-        static assert(0, "Precondition violated. FromJSON must take template parameters JT and P in any order");
+        static assert(0, "Precondition violated. fromJSON with Policy must only take template parameters JT and P, in any order");
 }
 
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
