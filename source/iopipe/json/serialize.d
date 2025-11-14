@@ -2118,7 +2118,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
                 first = false;
             else
                 w(", ");
-            serializeImpl(w, item);
+            policy.serializeImpl(w, item);
         }
         w("]");
     }
@@ -2535,4 +2535,13 @@ unittest
     buf[].deserialize(str);
     assert(str == "\"hello, world\n\"");
     assert(str.ptr >= buf.ptr && str.ptr < buf.ptr + buf.length);
+}
+
+// Issue #77
+unittest
+{
+	import std.range;
+	import std.algorithm;
+
+	assert(iota(10).map!"a+1".serialize == "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]");
 }
