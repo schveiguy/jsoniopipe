@@ -2487,14 +2487,14 @@ unittest
         int x;
         static S fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
         {
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
+            tokenizer.nextSignificant.jsonExpect(JSONToken.ObjectStart, "First token must be ObjectStart");
             auto xname = tokenizer.nextSignificant;
-            enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
-            jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
+            enforce!JSONIopipeException(xname.data() == "x", "Unknown key");
+            tokenizer.nextSignificant.jsonExpect(JSONToken.Colon, "Colon must follow key");
             auto val = tokenizer.nextSignificant;
 	    // ObjectEnd must be consumed by fromJSON
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
-            return S(val.data(tokenizer.chain).to!int);
+            tokenizer.nextSignificant.jsonExpect(JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
+            return S(val.data().to!int);
         }
     }
     auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
