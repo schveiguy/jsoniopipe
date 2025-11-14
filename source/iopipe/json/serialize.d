@@ -2502,27 +2502,27 @@ unittest
     assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
 }
 
+// fromJSON template arg order doesn't matter
 unittest
 {
     import std.exception;
-    static struct S
+    static struct S(bool SwapTemplateArgsOrder)
     {
         int x;
-        static S fromJSON(P, JT)(ref JT tokenizer, ref P policy)
+        static S fromJSONImpl(P, JT)(ref JT tokenizer, ref P policy)
         {
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
-            auto xname = tokenizer.nextSignificant;
-            enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
-            jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
-            auto val = tokenizer.nextSignificant;
-            // ObjectEnd must be consumed by fromJSON
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
-            return S(val.data(tokenizer.chain).to!int);
+            enum dontcare = S.init;
+            return dontcare;
         }
+        static if(SwapTemplateArgsOrder) 
+            static S fromJSON(P, JT)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
+        else
+            static S fromJSON(JT, P)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
     }
-    auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
+    auto tokenizer = `[{"x": 1},{"x": 2}]`;
 
-    assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
+    assert(__traits(compiles, tokenizer.deserialize!(S!true[2])));
+    assert(__traits(compiles, tokenizer.deserialize!(S!false[2])));
 }
 
 // Fail if JT is not ref
@@ -2533,8 +2533,8 @@ unittest
         int x;
         static S fromJSON(JT, P)(JT tokenizer, ref P policy)
         {
-            int dontcare = 0;
-            return S(dontcare);
+            enum dontcare = S.init;
+            return dontcare;
         }
     }
     auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
