@@ -1565,7 +1565,7 @@ unittest
 void deserialize(T, JT, Policy)(
     ref JT tokenizer,
     ref T item,
-    Policy policy
+    auto ref Policy policy
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     policy.deserializeImpl(tokenizer, item);
@@ -1573,7 +1573,7 @@ void deserialize(T, JT, Policy)(
 
 T deserialize(T, JT, Policy)(
     ref JT tokenizer,
-    Policy policy
+    auto ref Policy policy
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
     T result;
@@ -1609,7 +1609,7 @@ T deserialize(T, Chain)(
 
 T deserialize(T, Policy, Chain)(
     auto ref Chain c,
-    Policy policy
+    auto ref Policy policy
 ) if (isIopipe!Chain)
 {
     enum shouldReplaceEscapes = is(typeof(c.window[0] = c.window[1]));
