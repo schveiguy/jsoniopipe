@@ -500,21 +500,28 @@ unittest {
 }
 
 /**
- * Expect the given JSONItem to be a specific token.
+ * Expect the given Element or token to be a specific token.
  * Parameters:
- *      item: The item to check
+ *      item: The item/token to check
  *      expectedToken: The expected token the item should contain
  *      msg: Optional error message in case of mismatch
  * Throws:
  *	JSONIopipeException on violation.
  * Returns:
- *      the input item
+ *      the input item/token
  */
 auto jsonExpect(Item)(Item item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(item.token != expectedToken)
-        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
+    cast(void)jsonExpect(item.token, expectedToken, msg, file, line);
     return item;
+}
+
+/// ditto
+auto jsonExpect(JSONToken actualToken, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+{
+    if(actualToken != expectedToken)
+        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, actualToken), file, line);
+    return actualToken;
 }
 
 /**
