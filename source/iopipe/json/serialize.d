@@ -695,26 +695,39 @@ private template AllIgnoredMembers(T)
         enum AllIgnoredMembers = staticMap!(ApplyRight!(getUDAs, IgnoredMembers), T, BaseClassesTuple!T);
 }
 
+private enum isJTRef(alias InstantiatedF) = cast(bool) (ParameterStorageClassTuple!InstantiatedF[0] & ParameterStorageClass.ref_);
+
+/// Check if JT is passed by ref for the case where fromJSON already successfully compiled with a policy via IFTI
+private template checkRef(alias FromJSON, JT, P)
+{
+    static if(__traits(compiles,FromJSON!(P, JT)))
+        enum checkRef = isJTRef!(FromJSON!(P, JT));
+    else static if(__traits(compiles,FromJSON!(JT, P)))
+        enum checkRef = isJTRef!(FromJSON!(JT, P));
+    else
+        static assert(0, "Precondition violated. fromJSON with Policy must only take template parameters JT and P, in any order");
+}
+
 void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
 {
-    enum isRef(string s) = s == "ref";
     static if(__traits(compiles, T.fromJSON(tokenizer, policy))) {
         // use policy object
-        static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!(P, JT), 0)),
+        static assert(checkRef!(T.fromJSON, JT, P),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON(tokenizer, policy);
-    } else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init))) {
+    } else static if(is(Parameters!(T.fromJSON!JT)[1] == ReleasePolicy)) {
         // use ReleasePolicy
-         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+         static assert(isJTRef!(T.fromJSON!JT),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON(tokenizer, policy.relPol);
     } else static if(__traits(compiles, T.fromJSON(tokenizer))) {
         // use one parameter only
-         static assert(anySatisfy!(isRef, __traits(getParameterStorageClasses, item.fromJSON!JT, 0)),
+         static assert(isJTRef!(T.fromJSON!JT),
             "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
         item = T.fromJSON(tokenizer);
     } else {
         // This will fail to compile. Try to nudge the user to use a policy
+        pragma(msg, "Hint: fromJSON also doesn't compile with parameters (JSONTokenizer, ReleasePolicy) or  or just with (JSONTokenizer)");
         item = T.fromJSON(tokenizer, policy);
     }
 }
@@ -2474,14 +2487,14 @@ unittest
         int x;
         static S fromJSON(JT)(ref JT tokenizer, ReleasePolicy relPol)
         {
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
+            tokenizer.nextSignificant.jsonExpect(JSONToken.ObjectStart, "First token must be ObjectStart");
             auto xname = tokenizer.nextSignificant;
-            enforce!JSONIopipeException(xname.data(tokenizer.chain) == "x", "Unknown key");
-            jsonExpect(tokenizer.nextSignificant, JSONToken.Colon, "Colon must follow key");
+            enforce!JSONIopipeException(xname.data() == "x", "Unknown key");
+            tokenizer.nextSignificant.jsonExpect(JSONToken.Colon, "Colon must follow key");
             auto val = tokenizer.nextSignificant;
 	    // ObjectEnd must be consumed by fromJSON
-            jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
-            return S(val.data(tokenizer.chain).to!int);
+            tokenizer.nextSignificant.jsonExpect(JSONToken.ObjectEnd, "Last token shall be be ObjectStart");
+            return S(val.data().to!int);
         }
     }
     auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
@@ -2489,13 +2502,53 @@ unittest
     assert(tokenizer.deserialize!(S[2]) == [S(1), S(2)]);
 }
 
+// fromJSON template arg order doesn't matter
+unittest
+{
+    import std.exception;
+    static struct S(bool SwapTemplateArgsOrder)
+    {
+        int x;
+        static S fromJSONImpl(P, JT)(ref JT tokenizer, ref P policy)
+        {
+            enum dontcare = S.init;
+            return dontcare;
+        }
+        static if(SwapTemplateArgsOrder) 
+            static S fromJSON(P, JT)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
+        else
+            static S fromJSON(JT, P)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
+    }
+    auto tokenizer = `[{"x": 1},{"x": 2}]`;
+
+    assert(__traits(compiles, tokenizer.deserialize!(S!true[2])));
+    assert(__traits(compiles, tokenizer.deserialize!(S!false[2])));
+}
+
+// Fail if JT is not ref
+unittest
+{
+    static struct S
+    {
+        int x;
+        static S fromJSON(JT, P)(JT tokenizer, ref P policy)
+        {
+            enum dontcare = S.init;
+            return dontcare;
+        }
+    }
+    auto tokenizer = `[{"x": 1},{"x": 2}]`.jsonTokenizer;
+    assert(!__traits(compiles, tokenizer.deserialize!(S[2]) == [S(1), S(2)]));
+}
+
+// Do not mandate template argument order for fromJSON
 unittest
 {
     import std.exception;
     static struct S
     {
         int x;
-        static S fromJSON(P, JT)(ref JT tokenizer, ref P policy)
+        static S fromJSON(JT, P)(ref JT tokenizer, ref P policy)
         {
             jsonExpect(tokenizer.nextSignificant, JSONToken.ObjectStart, "First token must be ObjectStart");
             auto xname = tokenizer.nextSignificant;
