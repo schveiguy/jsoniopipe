@@ -536,9 +536,16 @@ auto jsonExpect(JSONToken actualToken, JSONToken expectedToken, string msg="Erro
  */
 auto jsonExpectNoError(Item)(Item item, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(item.token == JSONToken.Error)
-        throw new JSONIopipeException(msg, file, line);
+    cast(void)jsonExpectNoError(item.token, msg, file, line);
     return item;
+}
+
+/// ditto
+auto jsonExpectNoError(JSONToken token, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+{
+    if(token == JSONToken.Error)
+        throw new JSONIopipeException(msg, file, line);
+    return token;
 }
 
 /**
