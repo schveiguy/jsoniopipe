@@ -500,38 +500,54 @@ unittest {
 }
 
 /**
- * Expect the given JSONItem to be a specific token.
+ * Expect the given Element or token to be a specific token.
  * Parameters:
  *      item: The item to check
+ *      token: The token to check
  *      expectedToken: The expected token the item should contain
  *      msg: Optional error message in case of mismatch
  * Throws:
  *	JSONIopipeException on violation.
  * Returns:
- *      the input item
+ *      the input item/token
  */
 auto jsonExpect(Item)(Item item, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(item.token != expectedToken)
-        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, item.token), file, line);
+    cast(void)jsonExpect(item.token, expectedToken, msg, file, line);
     return item;
 }
 
+/// ditto
+auto jsonExpect(JSONToken token, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+{
+    if(token != expectedToken)
+        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, token), file, line);
+    return token;
+}
+
 /**
- * Expect the given JSONItem to not be an Error item
+ * Expect the given JSONItem or token to not be an Error item
  * Parameters:
  *      item: The item to check
+ *      token: The token to check
  *      msg: Optional error message in case of mismatch
  * Throws:
  *	JSONIopipeException if the item is an Error item.
  * Returns:
- *      the input item
+ *      the input item/token
  */
 auto jsonExpectNoError(Item)(Item item, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(item.token == JSONToken.Error)
-        throw new JSONIopipeException(msg, file, line);
+    cast(void)jsonExpectNoError(item.token, msg, file, line);
     return item;
+}
+
+/// ditto
+auto jsonExpectNoError(JSONToken token, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+{
+    if(token == JSONToken.Error)
+        throw new JSONIopipeException(msg, file, line);
+    return token;
 }
 
 /**
