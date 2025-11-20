@@ -517,11 +517,11 @@ auto jsonExpect(Item)(Item item, JSONToken expectedToken, string msg="Error", st
 }
 
 /// ditto
-auto jsonExpect(JSONToken actualToken, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+auto jsonExpect(JSONToken token, JSONToken expectedToken, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(actualToken != expectedToken)
-        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, actualToken), file, line);
-    return actualToken;
+    if(token != expectedToken)
+        throw new JSONIopipeException(format("%s: expected %s, got %s", msg, expectedToken, token), file, line);
+    return token;
 }
 
 /**
