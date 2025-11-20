@@ -502,7 +502,8 @@ unittest {
 /**
  * Expect the given Element or token to be a specific token.
  * Parameters:
- *      item: The item/token to check
+ *      item: The item to check
+ *      token: The token to check
  *      expectedToken: The expected token the item should contain
  *      msg: Optional error message in case of mismatch
  * Throws:
@@ -525,14 +526,15 @@ auto jsonExpect(JSONToken token, JSONToken expectedToken, string msg="Error", st
 }
 
 /**
- * Expect the given JSONItem to not be an Error item
+ * Expect the given JSONItem or token to not be an Error item
  * Parameters:
  *      item: The item to check
+ *      token: The token to check
  *      msg: Optional error message in case of mismatch
  * Throws:
  *	JSONIopipeException if the item is an Error item.
  * Returns:
- *      the input item
+ *      the input item/token
  */
 auto jsonExpectNoError(Item)(Item item, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
