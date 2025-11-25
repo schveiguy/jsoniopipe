@@ -65,6 +65,8 @@ private:
     bool isFirstInArray;
     size_t nWritten = 0;
 
+    char currentQuoteChar = '"';
+
     void putIndent() {
         outputChain.ensureElems(nWritten + indent * spacing + 1);
         outputChain.window[nWritten] = '\n';
@@ -78,10 +80,30 @@ private:
         nWritten += s.length;
     }
 
-    private bool isValidJSONNumber(string str) {
+    bool isValidJSONNumber(string str) {
         import std.regex;
         static auto numberRegex = regex(r"^-?(0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?$");
         return !str.matchFirst(numberRegex).empty;
+    }
+
+    void startObjectMember()
+    {
+        if (!isFirstInObj) {
+            putStr(",");
+            putIndent();
+        } else {
+            isFirstInObj = false;
+        }
+    }
+
+    void startArrayValue()
+    {
+        if (!isFirstInArray) {
+            putStr(",");
+            putIndent();
+        } else {
+            isFirstInArray = false;
+        }
     }
 
 public:
@@ -127,30 +149,17 @@ public:
 
     void addMember(T)(T key, MemberOptions options) {
         
-        if (key.length == 0 ) {
-            // use for array elements
-            if (!isFirstInArray) {
-                putStr(", ");
-                putIndent();
-            }
-            isFirstInArray = false;
-            return;
-        }
-
-        if (!isFirstInObj) {
-            putStr(",");
-            putIndent();
-        }
+        startObjectMember();
 
         static if (is(typeof(key) == string)) {
             if (options.escapeKey) {
                 beginString(options.quoteChar);
                 addStringData(key);
-                endString(options.quoteChar);
+                endString();
             } else {
                 beginString(options.quoteChar);
                 addStringData!(false, false)(key);
-                endString(options.quoteChar);
+                endString();
             }
         } else {
             putStr(to!string(key));
@@ -171,8 +180,17 @@ public:
         isFirstInObj = false;
     }
 
+    // expose startArrayValue to callers that emit arrays
+    void beginArrayValue() {
+        startArrayValue();
+    }
+
     void beginString(char quoteChar = '"') {
-        putStr([quoteChar]);
+        if (quoteChar != '"' && quoteChar != '\'')
+            throw new JSONIopipeException("Invalid quote character");
+
+        currentQuoteChar = quoteChar;
+        putStr((&quoteChar)[0 .. 1]);
     }
 
     // will automatically escape string data as needed.
@@ -197,8 +215,8 @@ public:
     }
 
 
-    void endString(char quoteChar = '"') {
-        putStr([quoteChar]);
+    void endString() {
+        putStr((&currentQuoteChar)[0 .. 1]);
     }
 
     // allow numeric types, or strings that are validated to be JSON numbers
@@ -209,6 +227,7 @@ public:
             }
             putStr(value);
         } else {
+            static assert(isNumeric!T, "addNumericData requires a numeric type");
             import std.format : formattedWrite;
             formattedWrite(&putStr, formatStr, value);
         }
@@ -1560,6 +1579,16 @@ void deserializeImpl(T, JT, Policy)(
     }
 }
 
+auto peekSkipComma(JT)(ref JT tokenizer)
+{
+    auto token = tokenizer.peekSignificant();
+    if(token != JSONToken.Comma)
+        return token;
+    // consume the comma
+    cast(void)tokenizer.nextSignificant;
+    return tokenizer.peekSignificant();
+}
+
 void deserializeArray(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
@@ -1572,25 +1601,9 @@ void deserializeArray(T, JT, Policy)(
 
     // Parse array elements
     size_t elementCount = 0;
-    while(true) {   
+    while(tokenizer.peekSkipComma() != JSONToken.ArrayEnd) {
         policy.onArrayElement(tokenizer, item, elementCount, context);
         elementCount++;
-
-        if (tokenizer.peekSignificant() == JSONToken.ArrayEnd) {
-            // If we hit the end of the array, break
-            break;
-        }
-
-        // verify and consume the comma
-        jsonItem = tokenizer.nextSignificant()
-                    .jsonExpect(JSONToken.Comma, "Parsing " ~ T.stringof);
-
-        static if (tokenizer.config.JSON5)
-        {
-            if (tokenizer.peekSignificant() == JSONToken.ArrayEnd)
-                break;
-        }
-
     }
 
     // verify we got an end array element
