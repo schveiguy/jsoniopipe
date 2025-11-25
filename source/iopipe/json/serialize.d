@@ -1618,16 +1618,6 @@ void deserializeImpl(T, JT, Policy)(
     }
 }
 
-auto peekSkipComma(JT)(ref JT tokenizer)
-{
-    auto token = tokenizer.peekSignificant();
-    if(token != JSONToken.Comma)
-        return token;
-    // consume the comma
-    cast(void)tokenizer.nextSignificant;
-    return tokenizer.peekSignificant();
-}
-
 void deserializeArray(T, JT, Policy)(
     ref Policy policy,
     ref JT tokenizer,
