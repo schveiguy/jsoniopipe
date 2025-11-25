@@ -125,7 +125,7 @@ void serializeWithFormatter(Formatter, T)(ref Formatter formatter, T val)
             formatter.beginArray();
             foreach(item; val.array)
             {
-                formatter.addMember(""); // dummy key for array element
+                formatter.beginArrayValue();
                 serializeWithFormatter(formatter, item);
             }
             formatter.endArray();
