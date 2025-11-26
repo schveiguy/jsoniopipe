@@ -9,6 +9,7 @@ import iopipe.json.parser;
 import iopipe.buffer;
 import iopipe.json.serialize;
 import iopipe.json.dom;
+import iopipe.json.formatter; 
 
 void main(string[] args)
 {
@@ -113,7 +114,6 @@ void serializeWithFormatter(Formatter, T)(ref Formatter formatter, T val)
         {
         case Obj:
             formatter.beginObject();
-            bool first = true;
             foreach(key, value; val.object)
             {
                 formatter.addMember(key);
