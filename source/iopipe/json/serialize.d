@@ -31,18 +31,6 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
-
-auto peekSkipComma(JT)(ref JT tokenizer)
-{
-    auto token = tokenizer.peekSignificant();
-    if(token != JSONToken.Comma)
-        return token;
-    // consume the comma
-    cast(void)tokenizer.nextSignificant;
-    return tokenizer.peekSignificant();
-}
-
-
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
     int maxDepthAvailable = 64;
