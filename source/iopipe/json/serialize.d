@@ -1824,11 +1824,52 @@ unittest
 
 
 struct DefaultSerializationPolicy {
+}
+
+bool serializeFieldValue(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, ref T val)
+{
+    static if (isSomeString!T)
+    {
+        if (val.length == 0)
+            return false; // skip
+    }
+
+    // Otherwise serialize value
+    serializeImpl(policy, w, val);
+    return true;
+}
+
+unittest
+{  
+    // skip at the start
+    static struct S1 {
+        string a;
+        int b;
+    }
+    auto s1 = S1("", 5);
+    assert(serialize(s1) == `{"b" : 5}`);
+
+    // skip at the end
+    static struct S2 {
+        int b;
+        string a;
+    }
+    auto s2 = S2(5, "");
+    assert(serialize(s2) == `{"b" : 5}`);
+
+    // skip in the middle
+    static struct S3 {
+        int a;
+        string b;
+        double c;
+    }
+    auto s3 = S3(1, "", 3.5);
+    assert(serialize(s3) == `{"a" : 1, "c" : 3.5}`);
 
 }
 
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (__traits(isStaticArray, T))
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, ref T val) if (__traits(isStaticArray, T))
 {
     auto arr = val;
     policy.serializeImpl(w, val[]);
@@ -1841,7 +1882,7 @@ unittest
     assert(serialize(arr) == "[1, 2, 3, 4, 5]");
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (is(T == enum))
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, ref T val) if (is(T == enum))
 {
     // enums are special, serialize based on the name. Unless there's a UDA
     // saying to serialize as the base type.
@@ -1856,7 +1897,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
     }
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
 {
     // open brace
     w("[");
@@ -1872,7 +1913,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
     w("]");
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
 {
     assert(is(T == V[K], V, K));
     enum useKW = !isSomeString!K;
@@ -1883,7 +1924,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
         // (sorry, json5, we are doing it this way for now with AAs)
         bool keyStart;
         bool keyEnd;
-        void kw(const(Char)[] str)
+        size_t kw(const(Char)[] str, size_t rollbackOffset = -1)
         {
             if(!keyStart)
             {
@@ -1893,7 +1934,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
                 keyStart = true;
             }
             keyEnd = str[$-1] == '"';
-            w(str);
+            return w(str);
         }
     }
 
@@ -1998,11 +2039,12 @@ private template jsonEscapeSubstitutions()
 }
 
 /// Instantiate the template without arguments so it's not necessary at the callsite anymore
-void serializeImpl(P, T, Char)(ref P Policy, scope void delegate(const(Char)[]) w, T val) if (isSomeString!T)
+void serializeImpl(P, T, Char)(ref P Policy, scope size_t delegate(const(Char)[], size_t = -1) w, T val) if (isSomeString!T)
 {
     import std.algorithm.iteration: substitute;
     w(`"`);
-    put(w, val.substitute!(jsonEscapeSubstitutions!()));
+    auto putWrapper = (const(Char)[] data) { w(data, -1); };
+    put(putWrapper, val.substitute!(jsonEscapeSubstitutions!()));
     w(`"`);
 }
 
@@ -2028,10 +2070,12 @@ unittest
     assert(raw.serialize.deserialize!string == raw);
 }
 
-void serializeAllMembers(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, auto ref T val)
+void serializeAllMembers(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, auto ref T val)
 {
     // serialize as an object
-    bool first = true;
+    size_t idx = 0; // index of the member we are processing, start from 0
+    size_t mark;
+    bool keep = true;
     static foreach(n; SerializableMembers!T)
     {
         static if(hasUDA!(__traits(getMember, T, n), extras))
@@ -2051,29 +2095,38 @@ void serializeAllMembers(P, T, Char)(ref P policy, scope void delegate(const(Cha
         }
         else
         {
-            if(first)
-                first = false;
-            else
+            if(idx == 0) {
+                mark = w(`"`) - 1;
+            }
+            else {
                 w(", ");
-            w(`"`);
+                mark = w(`"`) - 3;
+            }
             static if(hasUDA!(__traits(getMember, T, n), alternateName))
                 w(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
             else
                 w(n);
             w(`" : `);
-            policy.serializeImpl(w, __traits(getMember, val, n));
+            keep = policy.serializeFieldValue(w, __traits(getMember, val, n));
+            
+            ++idx;
+            if(!keep)
+            {
+                --idx;
+                w("", mark); // remove the field we just wrote
+            }
         }
     }
 }
 
 ///compatibility shim
-void serializeAllMembers(T, Char)(scope void delegate(const(Char)[]) w, auto ref T val)
+void serializeAllMembers(T, Char)(scope size_t delegate(const(Char)[], size_t = -1) w, auto ref T val)
 {
     auto policy = DefaultSerializationPolicy;
     serializeAllmembers(policy, w, val);
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (is(T == struct))
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, ref T val) if (is(T == struct))
 {
     static if(isInstanceOf!(Nullable, T))
     {
@@ -2159,7 +2212,7 @@ void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) 
     }
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, T val) if (is(T == class) || is(T == interface))
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, T val) if (is(T == class) || is(T == interface))
 {
     if(val is null)
     {
@@ -2195,7 +2248,7 @@ unittest
 }
 
 
-void serializeImpl(P, Char)(ref P policy, scope void delegate(const(Char)[]) w, typeof(null) val)
+void serializeImpl(P, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, typeof(null) val)
 {
     w("null");
 }
@@ -2210,12 +2263,18 @@ unittest
     assert(serialize(s) == `{"n" : null}`);
 }
 
-void serializeImpl(P, T, Char)(ref P policy, scope void delegate(const(Char)[]) w, ref T val) if (!is(T == enum) && isNumeric!T)
+void serializeImpl(P, T, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, ref T val) if (!is(T == enum) && isNumeric!T)
 {
-    formattedWrite(w, "%s", val);
+    import std.array : appender;
+    import std.format : formattedWrite;
+    
+    // Use a temporary buffer for formattedWrite
+    auto app = appender!(Char[])();
+    formattedWrite(app, "%s", val);
+    w(app.data);
 }
 
-void serializeImpl(P, Char)(ref P policy, scope void delegate(const(Char)[]) w, bool val)
+void serializeImpl(P, Char)(ref P policy, scope size_t delegate(const(Char)[], size_t = -1) w, bool val)
 {
     w(val ? "true" : "false");
 }
@@ -2241,14 +2300,21 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
     size_t result = 0;
     alias Char = ElementEncodingType!(WindowType!Chain);
-    void w(const(Char)[] data)
+    size_t w(const(Char)[] data, size_t rollbackOffset = -1)
     {
+        if (rollbackOffset != -1) {
+            result = result - offset + rollbackOffset;
+            offset = rollbackOffset;
+            return rollbackOffset;
+        }
+
         auto nWritten = chain.writeBuf!relOnWrite(data, offset);
         result += nWritten;
         static if(relOnWrite)
             offset = 0;
         else
             offset += nWritten;
+        return offset;
     }
 
     // serialize the item, recursively
@@ -2342,7 +2408,7 @@ unittest
     static class D : C
     {
         string s;
-        void toJSON(scope void delegate(const(char)[]) w)
+        void toJSON(scope size_t delegate(const(char)[], size_t = -1) w)
         {
             //FIXME: should this be needed?
             auto policy = DefaultSerializationPolicy();
@@ -2356,7 +2422,7 @@ unittest
     static class E : D
     {
         double d;
-        override void toJSON(scope void delegate(const(char)[]) w)
+        override void toJSON(scope size_t delegate(const(char)[], size_t = -1) w)
         {
             //FIXME: should this be needed?
             auto policy = DefaultSerializationPolicy();
