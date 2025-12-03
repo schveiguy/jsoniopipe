@@ -1941,7 +1941,7 @@ unittest
  * Result:
  *      AliasSeq!("<char>", "<escapesequence>", "<char>", "<escapesequence>", ...);
  */
-private template jsonEscapeSubstitutions()
+package template jsonEscapeSubstitutions()
 {
     import std.algorithm.iteration;
     import std.range;
