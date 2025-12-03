@@ -7,6 +7,9 @@ import iopipe.textpipe;
 import iopipe.valve;
 import iopipe.json.parser;
 import iopipe.buffer;
+import iopipe.json.serialize;
+import iopipe.json.dom;
+import iopipe.json.formatter; 
 
 void main(string[] args)
 {
@@ -20,7 +23,7 @@ void main(string[] args)
     auto outputter = bufd!(char).push!(c => c
                                 .encodeText!(UTFType.UTF8)
                                 .outputPipe(File(stdout).refCounted));
-    
+    /*
     int spacing;
     enum indent = 4;
     void putIndent()
@@ -92,4 +95,60 @@ void main(string[] args)
         item = parser.next;
     }
     putStr("\n");
+    */
+
+    JSONValue!string jsonData;
+    deserialize(parser, jsonData);
+    auto formatter = JSONFormatter!(typeof(outputter))(outputter);
+    
+    serializeWithFormatter(formatter, jsonData);
+    formatter.flushWritten();
+}
+
+void serializeWithFormatter(Formatter, T)(ref Formatter formatter, T val) 
+{
+    static if (is(T == JSONValue!string))
+    {
+        with(JSONType) final switch(val.type)
+        {
+        case Obj:
+            formatter.beginObject();
+            foreach(key, value; val.object)
+            {
+                formatter.addMember(key);
+                serializeWithFormatter(formatter, value);
+            }
+            formatter.endObject();
+            break;
+        case Array:
+            formatter.beginArray();
+            foreach(item; val.array)
+            {
+                formatter.beginArrayValue();
+                serializeWithFormatter(formatter, item);
+            }
+            formatter.endArray();
+            break;
+        case String:
+            formatter.beginString();
+            formatter.addStringData(val.str);
+            formatter.endString();
+            break;
+        case Integer:
+            formatter.addNumericData(val.integer);
+            break;
+        case Floating:
+            formatter.addNumericData(val.floating);
+            break;
+        case Bool:
+            if(val.boolean)
+                formatter.addKeywordValue(KeywordValue.True);
+            else
+                formatter.addKeywordValue(KeywordValue.False);
+            break;
+        case Null:
+            formatter.addKeywordValue(KeywordValue.Null);
+            break;
+        }
+    }
 }
