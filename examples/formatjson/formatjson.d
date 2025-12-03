@@ -102,7 +102,6 @@ void main(string[] args)
     auto formatter = JSONFormatter!(typeof(outputter))(outputter);
     
     serializeWithFormatter(formatter, jsonData);
-    formatter.addWhitespace("\n");
     formatter.flushWritten();
 }
 
