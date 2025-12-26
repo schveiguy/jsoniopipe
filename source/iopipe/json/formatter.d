@@ -51,9 +51,9 @@ private:
     size_t nWritten = 0;
     char currentQuoteChar = char.init;
 
-    private enum State : ubyte
+    enum State : ubyte
     {
-        Begin,  // next item should be either an Object or Array or String
+        Begin,  // next item should be either an Object or Array or String or Number or Keyword
         First,  // Expect the first member of a new object or array.
         /*
         * In an object:
@@ -76,6 +76,14 @@ private:
         End     // there shouldn't be any more items
     }
 
+    // How to treat string data passed to addStringData
+    enum StringMode : ubyte
+    {
+        passThru,   // do not modify or validate the contents
+        addEscapes, // escape any characters that would be invalid in JSON (default)
+        validate    // validate that existing escapes / characters are JSON-valid
+    }
+
     // 0 = array, 1 = object (same convention as parser)
     BitArray stack;
     size_t   stackLen;
@@ -89,6 +97,9 @@ private:
     // Can we add a value (string, number, keyword, begin object/array)?
     bool canAddValue() const nothrow
     {
+        if (currentQuoteChar != char.init)
+            return false; // can't add value inside a string
+            
         final switch (state) with (State)
         {
         case Begin:
@@ -115,7 +126,6 @@ private:
         final switch (state) with (State)
         {
         case First:
-            // no need to change state to Member, any key string added later will do that
             return true;
         case Member:
             putStr(",");
@@ -137,7 +147,6 @@ private:
         final switch (state) with (State)
         {
         case First:
-            // no need to change state to Member, any value added later will do that
             return true;
         case Member:
             putStr(",");
@@ -273,25 +282,19 @@ public:
         // prepare for a key string
         state = State.Value;
 
-        static if (is(typeof(key) == string))
+        beginString(options.quoteChar);
+        static if (__traits(compiles, putStr(key)))
         {
             if (options.escapeKey)
-            {
-                beginString(options.quoteChar);
                 addStringData(key);
-                endString();
-            }
             else
-            {
-                beginString(options.quoteChar);
-                addStringData!(false, false)(key);
-                endString();
-            }
+                addStringData!(StringMode.passThru)(key);
         }
         else
         {
             putStr(to!string(key));
         }
+        endString();
 
         final switch (options.colonSpacing)
         {
@@ -324,41 +327,108 @@ public:
         putStr((&quoteChar)[0 .. 1]);
     }
 
-    // will automatically escape string data as needed.
-    void addStringData(bool validate = true, bool addEscapes = true, T)(T value) {
+    void addStringData(StringMode mode = StringMode.addEscapes, T)(T value) {
         if (currentQuoteChar == char.init)
             throw new JSONIopipeException("cannot add string data outside of beginString/endString");
 
-        static if (validate) {
-            // Validate that the string doesn't contain invalid characters
-            foreach(char c; value) {
-                if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-                    throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+        static if (mode == StringMode.validate)
+        {
+            import std.ascii : isHexDigit;
+
+            auto s = value.to!string; // ensure we can index / look ahead
+
+            size_t i = 0;
+            while (i < s.length)
+            {
+                immutable c = s[i];
+
+                if (c == '\\')
+                {
+                    if (i + 1 >= s.length)
+                        throw new JSONIopipeException("Invalid escape sequence: lone backslash at end of string");
+
+                    immutable next = s[i + 1];
+
+                    // Allow \', but only when we're using single-quoted strings
+                    if (next == '\'' && currentQuoteChar == '\'')
+                    {
+                        i += 2;
+                        continue;
+                    }
+
+                    // Standard JSON escapes
+                    switch (next)
+                    {
+                    case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+                        i += 2;
+                        continue;
+                    case 'u':
+                        if (i + 5 >= s.length)
+                            throw new JSONIopipeException("Invalid \\u escape: too short");
+
+                        foreach (j; 2 .. 6)
+                        {
+                            immutable h = s[i + j];
+                            if (!isHexDigit(h))
+                                throw new JSONIopipeException("Invalid \\u escape: non-hex digit");
+                        }
+
+                        i += 6; // '\\', 'u', and 4 hex digits
+                        continue;
+                    default:
+                        throw new JSONIopipeException("Invalid escape sequence in string");
+                    }
+                }
+                else
+                {
+                    // Active quote character must be escaped
+                    if (c == currentQuoteChar)
+                        throw new JSONIopipeException("Unescaped quote character in string");
+
+                    // Bare control characters must not appear; they must be escaped
+                    if (c < 0x20)
+                        throw new JSONIopipeException(format("Invalid control character \\u%04X in string", cast(int)c));
+
+                    ++i;
                 }
             }
+
+            // In validate mode we output the string unchanged
+            putStr(s);
         }
-    
-        static if (addEscapes) {
+        else static if (mode == StringMode.addEscapes)
+        {
+            // Escape any characters that would be invalid in JSON
             auto escaped = value.substitute!(jsonEscapeSubstitutions!()).to!string;
-            
+
             // if we started with a single quote, also escape any remaining '
-            if (currentQuoteChar == '\'') {
+            if (currentQuoteChar == '\'')
+            {
                 import std.array : appender;
                 auto app = appender!string();
-                foreach (char c; escaped) {
-                    if (c == '\'') {
+                foreach (char c; escaped)
+                {
+                    if (c == '\'')
+                    {
                         app.put('\\');
                         app.put('\'');
-                    } else {
+                    }
+                    else
+                    {
                         app.put(c);
                     }
                 }
                 putStr(app.data);
-            } else {
+            }
+            else
+            {
                 // normal JSON style (double quotes only)
                 putStr(escaped);
             }
-        } else {
+        }
+        else static if (mode == StringMode.passThru)
+        {
+            // Assume the caller already provided a valid JSON string fragment
             putStr(value);
         }
     }
@@ -394,9 +464,10 @@ public:
             formattedWrite(&putStr, formatStr, value);
         }
 
-        if (stackLen == 0)
+        if (stackLen == 0) {
             state = State.End;
-        else
+            putIndent();
+        } else 
             state = State.Member;
     }
 
@@ -407,8 +478,10 @@ public:
 
         putStr(value);
 
-        if (stackLen == 0)
+        if (stackLen == 0) {
             state = State.End;
+            putIndent();
+        }
         else
             state = State.Member;
     }
@@ -527,6 +600,124 @@ unittest
 
     s = cast(string)chain.buf.strip;
     assert(s == `'It\'s ok'`);
+}
+
+unittest
+{
+    // addEscapes: real newline becomes literal "\n" in JSON
+    TestChain chain;
+    auto fmt = JSONFormatter!(TestChain)(chain);
+
+    fmt.beginString('"');
+    fmt.addStringData("line1\nline2"); // contains an actual newline character
+    fmt.endString();
+    fmt.flushWritten();
+
+    import std.string : strip;
+    auto s = cast(string)chain.buf.strip;
+    // Expect JSON text with a backslash-n escape, not a raw newline
+    assert(s == `"line1\nline2"`);
+}
+
+unittest
+{
+    // StringMode.validate: accept only correctly escaped content
+    import std.exception : assertThrown;
+    import std.string : strip;
+
+    alias Fmt = JSONFormatter!(TestChain);
+    alias SM = Fmt.StringMode;
+
+    TestChain chain;
+
+    // 1) Double‑quoted string with valid escapes should pass unchanged
+    auto fmt = Fmt(chain);
+    fmt.beginString('"');
+    fmt.addStringData!(SM.validate)(`He said: \"hi\" \\ test`);
+    fmt.endString();
+    fmt.flushWritten();
+
+    auto s = cast(string)chain.buf.strip;
+    assert(s == `"He said: \"hi\" \\ test"`);
+
+    // 2) Invalid escape ("\q") should throw in validate mode
+    chain.buf.length = 0;
+    auto fmt2 = Fmt(chain);
+    fmt2.beginString('"');
+    assertThrown!JSONIopipeException(fmt2.addStringData!(SM.validate)(`He said: \q`));
+
+    // 3) Lone backslash at end should throw in validate mode
+    chain.buf.length = 0;
+    auto fmt3 = Fmt(chain);
+    fmt3.beginString('"');
+    assertThrown!JSONIopipeException(fmt3.addStringData!(SM.validate)(`oops \`));
+
+    // 4) Unescaped quote should throw in validate mode
+    chain.buf.length = 0;
+    auto fmt4 = Fmt(chain);
+    fmt4.beginString('"');
+    assertThrown!JSONIopipeException(fmt4.addStringData!(SM.validate)(`He said: "hi"`));
+
+    // 5) Single‑quoted validate: \' is allowed, bare ' is not
+    chain.buf.length = 0;
+    auto fmt5 = Fmt(chain);
+    fmt5.beginString('\'');
+    fmt5.addStringData!(SM.validate)(`It\'s ok`);
+    fmt5.endString();
+    fmt5.flushWritten();
+
+    s = cast(string)chain.buf.strip;
+    assert(s == `'It\'s ok'`);
+
+    chain.buf.length = 0;
+    auto fmt6 = Fmt(chain);
+    fmt6.beginString('\'');
+    assertThrown!JSONIopipeException(fmt6.addStringData!(SM.validate)(`It's bad`));
+}
+
+unittest
+{
+    // StringMode.validate: cover all standard JSON escapes and \u forms
+    import std.exception : assertThrown;
+
+    alias Fmt = JSONFormatter!(TestChain);
+    alias SM = Fmt.StringMode;
+
+    TestChain chain;
+
+    // 1) All standard single-character escapes should be accepted
+    auto fmt = Fmt(chain);
+    fmt.beginString('"');
+    fmt.addStringData!(SM.validate)(`\" \\ \/ \b \f \n \r \t`);
+    fmt.endString();
+    fmt.flushWritten();
+
+    // 2) Valid \u escape should be accepted
+    chain.buf.length = 0;
+    auto fmt2 = Fmt(chain);
+    fmt2.beginString('"');
+    fmt2.addStringData!(SM.validate)(`\u00AF`);
+    fmt2.endString();
+    fmt2.flushWritten();
+
+    // 3) Too-short \u escape should throw
+    chain.buf.length = 0;
+    auto fmt3 = Fmt(chain);
+    fmt3.beginString('"');
+    assertThrown!JSONIopipeException(fmt3.addStringData!(SM.validate)(`\u12`));
+
+    // 4) \u escape with non-hex digits should throw
+    chain.buf.length = 0;
+    auto fmt4 = Fmt(chain);
+    fmt4.beginString('"');
+    assertThrown!JSONIopipeException(fmt4.addStringData!(SM.validate)(`\u12xz`));
+
+    // 5) Bare control character (< 0x20) should throw
+    chain.buf.length = 0;
+    auto fmt5 = Fmt(chain);
+    fmt5.beginString('"');
+    string bad = "ok" ~ "\x01"; // embed a real control char 0x01
+    assertThrown!JSONIopipeException(fmt5.addStringData!(SM.validate)(bad));
 }
 
 unittest
