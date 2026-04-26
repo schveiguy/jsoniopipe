@@ -588,8 +588,8 @@ int validateString(bool replaceEscapes = true, bool JSON5 = false, Chain)(immuta
             // need more data from the pipe
             if(c.extend(0) == 0)
             {
-                // EOF.
-                if(quotechar == '\0')
+                // EOF. ensure we aren't in escaped mode
+                if(!isEscaped && quotechar == '\0')
                 {
                     // the chain passed in was an already-parsed string. Treat
                     // this as the closing quote.
@@ -760,6 +760,11 @@ escapeSequenceDone:
                 return cast(int)(targetPos - origPos);
             else
                 return cast(int)(pos - origPos - 1);
+        }
+        else if(elem < 0x20)
+        {
+            // raw control characters are not allowed
+            return -1;
         }
         else
         {
