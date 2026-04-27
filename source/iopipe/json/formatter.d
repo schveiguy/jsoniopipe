@@ -32,9 +32,9 @@ enum MemberNameStyle
 // How to treat string data passed to addStringData
 enum StringMode : ubyte
 {
-    passThru,   // do not modify or validate the contents
-    addEscapes, // escape any characters that would be invalid in JSON (default)
-    validate    // validate that existing escapes / characters are JSON-valid
+    PassThru,   // do not modify or validate the contents
+    AddEscapes, // escape any characters that would be invalid in JSON (default)
+    Validate    // validate that existing escapes / characters are JSON-valid
 }
 
 
@@ -46,6 +46,19 @@ enum KeywordValue : string {
     Infinity = "Infinity",
     NegativeInfinity = "-Infinity",
     NaN = "NaN"
+}
+
+enum State : ubyte
+{
+    Begin,  // next item should be either an Object or Array or String or Number or Keyword
+    First,  // Expect the first member of a new object or array or end of aggregate (EOA)
+    Member, // Expect next member (key for object, value for array) or EOA(JSON5 only)
+    Colon, // Expect colon token
+    Comma, // Expect comma/EOA
+    Value,  // Expect value of object field
+    String, // Inside a value string
+    MemberString, // Inside a membername string
+    End     // there shouldn't be any more items
 }
 
 /++
@@ -180,20 +193,8 @@ public:
         this.outputChain = &chain;
         this.pos = pos;
     }
-    // public access to state for formatting purposes
-    enum State : ubyte
-    {
-        Begin,  // next item should be either an Object or Array or String or Number or Keyword
-        First,  // Expect the first member of a new object or array or end of aggregate (EOA)
-        Member, // Expect next member (key for object, value for array) or EOA(JSON5 only)
-        Colon, // Expect colon token
-        Comma, // Expect comma/EOA
-        Value,  // Expect value of object field
-        String, // Inside a value string
-        MemberString, // Inside a membername string
-        End     // there shouldn't be any more items
-    }
 
+    // public access to state for formatting purposes
     State state() const @property nothrow => _state;
     size_t position() const @property nothrow => pos;
     auto window() => outputChain.window[0 .. pos];
@@ -299,18 +300,18 @@ PUT_SYMBOL:
     // 3. validate - this string data must be valid JSON string data, invalid
     // data will cause the function to throw. Note that splitting escape
     // sequences across calls to this function will fail. e.g. `addStringData("abc\\"); addStringData("n");`
-    void addStringData(StringMode mode = StringMode.addEscapes, T)(T data)
+    void addStringData(StringMode mode = StringMode.AddEscapes, T)(T data)
     {
         if (_state != State.String && _state != State.MemberString)
             throw new JSONIopipeException("cannot add string data outside of beginString/endString");
-        static if (mode == StringMode.addEscapes)
+        static if (mode == StringMode.AddEscapes)
         {
             // write the string data, escaping any characters that should be escaped.
             formattedWrite(&putEscapedStr, "%s", data);
         }
         else
         { 
-            static if (mode == StringMode.validate)
+            static if (mode == StringMode.Validate)
             {
                 // Write the string as-is, including a termination quote character.
                 // Then we validate the resulting data, and trim off the quote character.
@@ -448,7 +449,7 @@ private:
     void spacingBeforeValue()
     {
         // if starting a member, then output index. otherwise (after colon), do not.
-        if(outputter.state == outputter.State.Member || outputter.state == outputter.State.First)
+        if(outputter.state == State.Member || state == State.First)
             putIndent(outputter.depth);
     }
 
@@ -459,6 +460,12 @@ public:
         this.indent = indent;
         this.colonSpacing = colonSpacing;
     }
+
+    State state() const @property nothrow => outputter.state();
+    size_t position() const @property nothrow => outputter.position();
+    auto window() => outputter.window();
+    bool inObj() const @property nothrow => outputter.inObj();
+    size_t depth() const @property nothrow => outputter.depth();
 
     void beginObject() {
         spacingBeforeValue();
@@ -503,15 +510,9 @@ public:
         outputter.addMemberName(memberName, style);
     }
 
-    void addStringData(StringMode mode = StringMode.addEscapes, T)(T data)
-    {
-        outputter.addStringData!mode(data);
-    }
+    void addStringData(StringMode mode = StringMode.AddEscapes, T)(T data) => outputter.addStringData!mode(data);
 
-    void endString()
-    {
-        outputter.endString();
-    }
+    void endString() => outputter.endString();
 
     void addNumber(T)(T value, string format = "%s")
     {
@@ -543,13 +544,12 @@ public:
     }
 
     void addComma() => outputter.addComma();
+    void addWhitespace(bool validate = false, T)(T data) => outputter.addWhitespace!validate(data);
 
     static if(JSON5)
         void addComment(bool validate = false, T)(T commentData) => outputter.addComment!validate(commentData);
 
     void flushWritten() => outputter.flushWritten();
-    size_t position() const @property nothrow => outputter.position();
-    auto window() => outputter.window();
 }
 
 auto jsonFormatter(bool JSON5 = false, Chain)(ref Chain chain, size_t pos = 0, int indent=4, ColonSpacing colonSpacing = ColonSpacing.After)
@@ -659,7 +659,7 @@ unittest
     // 1) Double‑quoted string with valid escapes should pass unchanged
     auto fmt = chain.jsonFormatter;
     fmt.beginString();
-    fmt.addStringData!(StringMode.validate)(`He said: \"hi\" \\ test`);
+    fmt.addStringData!(StringMode.Validate)(`He said: \"hi\" \\ test`);
     fmt.endString();
 
     auto s = fmt.window;
@@ -668,22 +668,22 @@ unittest
     // 2) Invalid escape ("\q") should throw in validate mode
     auto fmt2 = chain.jsonFormatter;
     fmt2.beginString();
-    assertThrown!JSONIopipeException(fmt2.addStringData!(StringMode.validate)(`He said: \q`));
+    assertThrown!JSONIopipeException(fmt2.addStringData!(StringMode.Validate)(`He said: \q`));
 
     // 3) Lone backslash at end should throw in validate mode
     auto fmt3 = chain.jsonFormatter;
     fmt3.beginString();
-    assertThrown!JSONIopipeException(fmt3.addStringData!(StringMode.validate)(`oops \`));
+    assertThrown!JSONIopipeException(fmt3.addStringData!(StringMode.Validate)(`oops \`));
 
     // 4) Unescaped quote should throw in validate mode
     auto fmt4 = chain.jsonFormatter;
     fmt4.beginString();
-    assertThrown!JSONIopipeException(fmt4.addStringData!(StringMode.validate)(`He said: "hi"`));
+    assertThrown!JSONIopipeException(fmt4.addStringData!(StringMode.Validate)(`He said: "hi"`));
 
     // 5) Single‑quoted validate: \' is allowed, bare ' is not
     auto fmt5 = chain.jsonFormatter!true;
     fmt5.beginString('\'');
-    fmt5.addStringData!(StringMode.validate)(`It\'s ok`);
+    fmt5.addStringData!(StringMode.Validate)(`It\'s ok`);
     fmt5.endString();
 
     s = fmt5.window;
@@ -691,12 +691,12 @@ unittest
 
     auto fmt6 = chain.jsonFormatter!true;
     fmt6.beginString('\'');
-    assertThrown!JSONIopipeException(fmt6.addStringData!(StringMode.validate)(`It's bad`));
+    assertThrown!JSONIopipeException(fmt6.addStringData!(StringMode.Validate)(`It's bad`));
 }
 
 unittest
 {
-    // StringMode.validate: cover all standard JSON escapes and \u forms
+    // StringMode.Validate: cover all standard JSON escapes and \u forms
     import std.exception : assertThrown;
 
     auto chain = bufd!char();
@@ -704,30 +704,30 @@ unittest
     // 1) All standard single-character escapes should be accepted
     auto fmt = chain.jsonFormatter;
     fmt.beginString();
-    fmt.addStringData!(StringMode.validate)(`\" \\ \/ \b \f \n \r \t`);
+    fmt.addStringData!(StringMode.Validate)(`\" \\ \/ \b \f \n \r \t`);
     fmt.endString();
 
     // 2) Valid \u escape should be accepted
     auto fmt2 = chain.jsonFormatter;
     fmt2.beginString();
-    fmt2.addStringData!(StringMode.validate)(`\u00AF`);
+    fmt2.addStringData!(StringMode.Validate)(`\u00AF`);
     fmt2.endString();
 
     // 3) Too-short \u escape should throw
     auto fmt3 = chain.jsonFormatter;
     fmt3.beginString();
-    assertThrown!JSONIopipeException(fmt3.addStringData!(StringMode.validate)(`\u12`));
+    assertThrown!JSONIopipeException(fmt3.addStringData!(StringMode.Validate)(`\u12`));
 
     // 4) \u escape with non-hex digits should throw
     auto fmt4 = chain.jsonFormatter;
     fmt4.beginString();
-    assertThrown!JSONIopipeException(fmt4.addStringData!(StringMode.validate)(`\u12xz`));
+    assertThrown!JSONIopipeException(fmt4.addStringData!(StringMode.Validate)(`\u12xz`));
 
     // 5) Bare control character (< 0x20) should throw
     auto fmt5 = chain.jsonFormatter;
     fmt5.beginString();
     string bad = "ok" ~ "\x01"; // embed a real control char 0x01
-    assertThrown!JSONIopipeException(fmt5.addStringData!(StringMode.validate)(bad));
+    assertThrown!JSONIopipeException(fmt5.addStringData!(StringMode.Validate)(bad));
 }
 
 unittest
