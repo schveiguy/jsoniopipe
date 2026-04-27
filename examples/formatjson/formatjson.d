@@ -23,23 +23,7 @@ void main(string[] args)
     auto outputter = bufd!(char).push!(c => c
                                 .encodeText!(UTFType.UTF8)
                                 .outputPipe(File(stdout).refCounted));
-    /*
-    int spacing;
-    enum indent = 4;
-    void putIndent()
-    {
-        outputter.ensureElems(indent * spacing + 1);
-        outputter.window[0] = '\n';
-        outputter.window[1 .. 1+indent*spacing] = ' ';
-        outputter.release(indent * spacing + 1);
-    }
-
-    void putStr(const(char)[] s)
-    {
-        outputter.ensureElems(s.length);
-        outputter.window[0 .. s.length] = s;
-        outputter.release(s.length);
-    }
+    auto fmt = outputter.jsonFormatter;
 
     auto item = parser.next;
     while(item.token != JSONToken.EOF)
@@ -47,108 +31,47 @@ void main(string[] args)
         with(JSONToken) final switch(item.token)
         {
         case ObjectStart:
-            ++spacing;
-            putStr("{");
-            putIndent();
-            break;
-        case ObjectEnd:
-            --spacing;
-            putIndent();
-            putStr("}");
+            fmt.beginObject();
             break;
         case ArrayStart:
-            ++spacing;
-            putStr("[");
-            putIndent();
+            fmt.beginArray();
             break;
+        case ObjectEnd:
         case ArrayEnd:
-            --spacing;
-            putIndent();
-            putStr("]");
+            fmt.endAggregate();
             break;
         case Comma:
-            putStr(",");
-            putIndent();
+            fmt.addComma();
             break;
         case Colon:
-            putStr(": ");
+            fmt.addColon();
             break;
         case String:
-            putStr("\"");
-            putStr(item.data);
-            putStr("\"");
+            fmt.beginString();
+            fmt.addStringData(item.data);
+            fmt.endString();
             break;
         case Number:
+            fmt.addNumber(item.data);
+            break;
         case True:
+            fmt.addKeywordValue(KeywordValue.True);
+            break;
         case False:
+            fmt.addKeywordValue(KeywordValue.False);
+            break;
         case Null:
-            putStr(item.data);
+            fmt.addKeywordValue(KeywordValue.Null);
             break;
         case Error:
         case EOF:
-            putStr("***ERROR***");
+            throw new Exception("Error!");
             return;
-	case Symbol, Comment, Space:
-	    assert(0);
+        case Symbol, Comment, Space:
+            assert(0);
         }
 
         item = parser.next;
-    }
-    putStr("\n");
-    */
-
-    JSONValue!string jsonData;
-    deserialize(parser, jsonData);
-    auto formatter = JSONFormatter!(typeof(outputter))(outputter);
-    
-    serializeWithFormatter(formatter, jsonData);
-    formatter.flushWritten();
-}
-
-void serializeWithFormatter(Formatter, T)(ref Formatter formatter, T val) 
-{
-    static if (is(T == JSONValue!string))
-    {
-        with(JSONType) final switch(val.type)
-        {
-        case Obj:
-            formatter.beginObject();
-            foreach(key, value; val.object)
-            {
-                formatter.addMember(key);
-                serializeWithFormatter(formatter, value);
-            }
-            formatter.endObject();
-            break;
-        case Array:
-            formatter.beginArray();
-            foreach(item; val.array)
-            {
-                formatter.beginArrayValue();
-                serializeWithFormatter(formatter, item);
-            }
-            formatter.endArray();
-            break;
-        case String:
-            formatter.beginString();
-            formatter.addStringData(val.str);
-            formatter.endString();
-            break;
-        case Integer:
-            formatter.addNumericData(val.integer);
-            break;
-        case Floating:
-            formatter.addNumericData(val.floating);
-            break;
-        case Bool:
-            if(val.boolean)
-                formatter.addKeywordValue(KeywordValue.True);
-            else
-                formatter.addKeywordValue(KeywordValue.False);
-            break;
-        case Null:
-            formatter.addKeywordValue(KeywordValue.Null);
-            break;
-        }
+        fmt.flushWritten();
     }
 }

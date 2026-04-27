@@ -82,7 +82,7 @@ private:
     void popContainer()
     {
         assert(stackLen != 0);
-        _state = (--stackLen == 0) ? State.End : State.Member;
+        _state = (--stackLen == 0) ? State.End : State.Comma;
     }
 
     // Can we add a value (string, number, keyword, begin object/array)?
@@ -203,7 +203,7 @@ public:
     void beginObject()
     {
         if (!canAddValue)
-            throw new JSONIopipeException("beginObject not allowed in current state");
+            throw new JSONIopipeException(format("beginObject not allowed (state = %s)", _state));
 
         pushContainer(true);  // object
         _state = State.First;
@@ -213,7 +213,7 @@ public:
     void beginArray()
     {
         if (!canAddValue)
-            throw new JSONIopipeException("beginObject not allowed in current state");
+            throw new JSONIopipeException(format("beginObject not allowed (state = %s)", _state));
 
         pushContainer(false); // array
         _state = State.First;
@@ -223,7 +223,7 @@ public:
     void endAggregate()
     {
         if (!canEndAggregate)
-            throw new JSONIopipeException("endAggregate not allowed for current state");
+            throw new JSONIopipeException(format("endAggregate not allowed (state = %s)", _state));
 
         putStr(inObj ? "}" : "]");
         popContainer();
@@ -232,7 +232,7 @@ public:
     void beginString()
     {
         if (!beginStringState())
-            throw new JSONIopipeException("beginString not allowed for current state");
+            throw new JSONIopipeException(format("beginString not allowed (state = %s)", _state));
 
         putStr("\"");
         static if (JSON5)
@@ -243,7 +243,7 @@ public:
     {
         assert(quoteChar == '\'' || quoteChar == '"');
         if (!beginStringState())
-            throw new JSONIopipeException("beginString not allowed for current state");
+            throw new JSONIopipeException(format("beginString not allowed (state = %s)", _state));
         putStr((&quoteChar)[0 .. 1]);
         currentQuoteChar[0] = quoteChar;
     }
@@ -303,7 +303,6 @@ PUT_SYMBOL:
     {
         if (_state != State.String && _state != State.MemberString)
             throw new JSONIopipeException("cannot add string data outside of beginString/endString");
-        import std.format : formattedWrite;
         static if (mode == StringMode.addEscapes)
         {
             // write the string data, escaping any characters that should be escaped.
@@ -358,8 +357,7 @@ PUT_SYMBOL:
     void addNumber(T)(T value, string format = "%s")
     {
         if (!canAddValue())
-            throw new JSONIopipeException("addNumber not allowed in current state");
-        import std.format : formattedWrite;
+            throw new JSONIopipeException(.format("addNumber not allowed (state = %s)", _state));
         // save the original position
         auto origPos = pos;
         formattedWrite(&putStr, format, value);
@@ -373,7 +371,7 @@ PUT_SYMBOL:
     void addKeywordValue(KeywordValue value)
     {
         if (!canAddValue())
-            throw new JSONIopipeException("addKeywordValue not allowed in current state");
+            throw new JSONIopipeException(format("addKeywordValue not allowed (state = %s)", _state));
 
         putStr(cast(string)value);
 
@@ -383,7 +381,7 @@ PUT_SYMBOL:
     void addColon()
     {
         if(_state != State.Colon)
-            throw new JSONIopipeException("Tried to add a colon when unexpected");
+            throw new JSONIopipeException(format("Tried to add a colon when unexpected (state = %s)", _state));
 
         putStr(":");
         _state = State.Value;
@@ -392,7 +390,7 @@ PUT_SYMBOL:
     void addComma()
     {
         if(_state != State.Comma)
-            throw new JSONIopipeException("Tried to add a comma when unexpected");
+            throw new JSONIopipeException(format("Tried to add a comma when unexpected (state = %s)", _state));
 
         putStr(",");
         _state = State.Member;
@@ -462,10 +460,12 @@ public:
     }
 
     void beginObject() {
+        spacingBeforeValue();
         outputter.beginObject();
     }
 
     void beginArray() {
+        spacingBeforeValue();
         outputter.beginArray();
     }
 
