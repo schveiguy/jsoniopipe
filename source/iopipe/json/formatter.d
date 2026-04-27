@@ -417,7 +417,8 @@ PUT_SYMBOL:
         static if(validate)
             static assert(false, "comment validation not yet impelmented");
         import std.range : put;
-        put(&putStr, data);
+        auto r = &putStr;
+        put(r, commentData);
     }
 
     void flushWritten()
@@ -493,6 +494,13 @@ public:
     {
         spacingBeforeValue();
         outputter.addMemberName(memberName);
+    }
+
+    static if(JSON5)
+    void addMemberName(const(char)[] memberName, MemberNameStyle style)
+    {
+        spacingBeforeValue();
+        outputter.addMemberName(memberName, style);
     }
 
     void addStringData(StringMode mode = StringMode.addEscapes, T)(T data)
@@ -817,6 +825,29 @@ unittest
     auto fmt = chain.jsonFormatter;
 
     assertThrown!JSONIopipeException(fmt.endString());
+}
+
+unittest
+{
+    // JSON5 options
+    auto chain = bufd!char();
+    auto fmt = chain.jsonFormatter!true;
+
+    
+    fmt.beginObject();
+    fmt.addMemberName("a", MemberNameStyle.SingleQuote);
+    fmt.addColon();
+    fmt.addNumber(1);
+    fmt.addComma();
+    fmt.addMemberName("b", MemberNameStyle.Symbol);
+    fmt.addColon();
+    fmt.addNumber(2);
+    fmt.addComma(); // trailing comma
+    fmt.addComment(" // trailing comma\n");
+    fmt.endAggregate();
+    
+    auto s = fmt.window;
+    assert(s == "{\n    'a': 1,\n    b: 2, // trailing comma\n\n}");
 }
 
 /+
