@@ -1,14 +1,11 @@
 import std.io;
 import std.io.driver;
 import iopipe.refc: refCounted;
-import iopipe.stream;
 import iopipe.bufpipe;
 import iopipe.textpipe;
 import iopipe.valve;
-import iopipe.json.parser;
 import iopipe.buffer;
-import iopipe.json.serialize;
-import iopipe.json.dom;
+import iopipe.json.parser;
 import iopipe.json.formatter; 
 
 void main(string[] args)
@@ -64,10 +61,9 @@ void main(string[] args)
             fmt.addKeywordValue(KeywordValue.Null);
             break;
         case Error:
-        case EOF:
             throw new Exception("Error!");
             return;
-        case Symbol, Comment, Space:
+        case Symbol, Comment, Space, EOF:
             assert(0);
         }
 
