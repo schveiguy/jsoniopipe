@@ -15,58 +15,88 @@ import std.algorithm.iteration : substitute;
 import std.algorithm.searching : startsWith, endsWith;
 import std.format;
 
+/**
+ * Controls the whitespace placed around the colon separator between a JSON
+ * object key and its value.
+ */
 enum ColonSpacing {
-    None,  // "key":"value"
-    After, // "key": "value"
-    Both,  // "key" : "value"
+    None,  /// No spaces around the colon: `"key":"value"`
+    After, /// A single space after the colon: `"key": "value"`
+    Both,  /// A single space before and after the colon: `"key" : "value"`
 }
 
+/**
+ * Controls how an object member name is quoted when writing JSON5 output.
+ * In standard JSON, member names are always double-quoted; this enum is only
+ * meaningful when the `JSON5` template parameter is `true`.
+ */
 enum MemberNameStyle
 {
-    DoubleQuote,
-    SingleQuote,
-    Symbol,
-    Auto /// Pick the best one for JSON5 based on the member name
+    DoubleQuote, /// Enclose the member name in double quotes: `"key"`
+    SingleQuote, /// Enclose the member name in single quotes: `'key'`
+    Symbol,      /// Write the member name as a bare identifier (no quotes): `key`
+    Auto         /// Pick the best style: bare symbol if valid, otherwise double-quoted (or single-quoted if the name contains a double-quote)
 }
 
-// How to treat string data passed to addStringData
+/**
+ * Controls how raw data passed to `addStringData` is interpreted and written
+ * into the output stream.
+ */
 enum StringMode : ubyte
 {
-    PassThru,   // do not modify or validate the contents
-    AddEscapes, // escape any characters that would be invalid in JSON (default)
-    Validate    // validate that existing escapes / characters are JSON-valid
+    PassThru,   /// Write data to the output as-is, with no escaping or validation.
+    AddEscapes, /// Escape any characters that are invalid inside a JSON string (default).
+    Validate    /// Verify that the data is already valid JSON string content and throw `JSONIopipeException` if not.
 }
 
 
+/**
+ * Represents a JSON or JSON5 keyword literal that can be written directly to
+ * the output stream via `addKeywordValue`. Each member's value is the exact
+ * string token that will appear in the output.
+ */
 enum KeywordValue : string {
-    Null = "null",
-    True = "true",
-    False = "false",
+    Null = "null",             /// The JSON `null` literal.
+    True = "true",             /// The JSON `true` literal.
+    False = "false",           /// The JSON `false` literal.
     // JSON5 extensions
-    Infinity = "Infinity",
-    NegativeInfinity = "-Infinity",
-    NaN = "NaN"
+    Infinity = "Infinity",         /// The JSON5 `Infinity` literal.
+    NegativeInfinity = "-Infinity", /// The JSON5 `-Infinity` literal.
+    NaN = "NaN"                /// The JSON5 `NaN` literal.
 }
 
+/**
+ * Represents the current position in the JSON output state machine.
+ * Exposed via the `state` property so that formatters layered on top of
+ * `JSONOutputter` can make spacing decisions without duplicating state tracking.
+ */
 enum State : ubyte
 {
-    Begin,  // next item should be either an Object or Array or String or Number or Keyword
-    First,  // Expect the first member of a new object or array or end of aggregate (EOA)
-    Member, // Expect next member (key for object, value for array) or EOA(JSON5 only)
-    Colon, // Expect colon token
-    Comma, // Expect comma/EOA
-    Value,  // Expect value of object field
-    String, // Inside a value string
-    MemberString, // Inside a membername string
-    End     // there shouldn't be any more items
+    Begin,        /// No output has been written yet; a value, object, or array may be started.
+    First,        /// Inside an object or array, before the first member; a value or end-of-aggregate is expected.
+    Member,       /// Inside an object or array after a comma; the next member (or end-of-aggregate in JSON5) is expected.
+    Colon,        /// An object key has been written; a colon is expected next.
+    Comma,        /// A value has been written; a comma or end-of-aggregate is expected.
+    Value,        /// A colon has been written; the object field's value is expected next.
+    String,       /// Inside a string value; `addStringData` and `endString` are valid.
+    MemberString, /// Inside an object member-name string; `addStringData` and `endString` are valid.
+    End           /// The top-level value is complete; no further output is allowed.
 }
 
-/++
-    Mechanism to output json data to a character iopipe.
-
-    This does not by default put any spacing, but allows spacing to be added as
-    needed. It can function as a formatter which does not add any formatting (spacing).
- +/
+/**
+ * Low-level JSON writer that emits tokens directly to a character iopipe with
+ * no added whitespace. It enforces the structural rules of JSON (or JSON5 when
+ * `JSON5` is `true`) via an internal state machine, throwing
+ * `JSONIopipeException` if methods are called in an invalid order.
+ *
+ * Use `JSONStandardFormatter` for output with indentation and newlines, or
+ * construct this type directly when compact output is required.
+ *
+ * Params:
+ *   Chain = An iopipe whose element type is `char`.
+ *   JSON5 = When `true`, enables JSON5 extensions such as single-quoted
+ *           strings, bare symbol keys, trailing commas, and comment output.
+ */
 struct JSONOutputter(Chain, bool JSON5 = false)
 if (isIopipe!Chain)
 {
@@ -188,19 +218,35 @@ private:
 
 public:
 
+    /**
+     * Construct a `JSONOutputter` that writes into `chain` starting at `pos`.
+     *
+     * Params:
+     *   chain = The output iopipe to write JSON into. The outputter holds a
+     *           pointer to this chain, so it must outlive the outputter.
+     *   pos   = Initial write offset within `chain`'s window.
+     */
     this(ref Chain chain, size_t pos = 0)
     {
         this.outputChain = &chain;
         this.pos = pos;
     }
 
-    // public access to state for formatting purposes
+    /// The current state of the output state machine.
     State state() const @property nothrow => _state;
+    /// The number of characters written into the output chain's window so far.
     size_t position() const @property nothrow => pos;
+    /// A slice of the output chain's window containing all characters written so far.
     auto window() => outputChain.window[0 .. pos];
+    /// `true` when the innermost open aggregate is an object.
     bool inObj() const @property nothrow => stackLen == 0 ? false : stack[stackLen - 1];
+    /// The number of currently open (not yet closed) objects and arrays.
     size_t depth() const @property nothrow => stackLen;
 
+    /**
+     * Write `{` to the output and push a new object onto the aggregate stack.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     */
     void beginObject()
     {
         if (!canAddValue)
@@ -211,6 +257,10 @@ public:
         putStr("{");
     }
 
+    /**
+     * Write `[` to the output and push a new array onto the aggregate stack.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     */
     void beginArray()
     {
         if (!canAddValue)
@@ -221,6 +271,13 @@ public:
         putStr("[");
     }
 
+    /**
+     * Close the innermost open object or array, writing `}` or `]` to the
+     * output. May be called on an empty aggregate, after a complete value, or —
+     * in JSON5 mode — after a trailing comma.
+     * Throws `JSONIopipeException` if no aggregate is open or the state does
+     * not allow closing.
+     */
     void endAggregate()
     {
         if (!canEndAggregate)
@@ -230,6 +287,11 @@ public:
         popContainer();
     }
 
+    /**
+     * Write an opening `"` and transition into string-writing mode.
+     * Follow with zero or more calls to `addStringData`, then `endString`.
+     * Throws `JSONIopipeException` if the current state does not allow a string.
+     */
     void beginString()
     {
         if (!beginStringState())
@@ -240,6 +302,15 @@ public:
             currentQuoteChar[0] = '"';
     }
 
+    /**
+     * JSON5 only. Write an opening quote character and transition into
+     * string-writing mode, using the specified quote character.
+     * Follow with zero or more calls to `addStringData`, then `endString`.
+     * Throws `JSONIopipeException` if the current state does not allow a string.
+     *
+     * Params:
+     *   quoteChar = The quote character to use; must be `'` or `"`.
+     */
     static if(JSON5) void beginString(char quoteChar)
     {
         assert(quoteChar == '\'' || quoteChar == '"');
@@ -249,7 +320,15 @@ public:
         currentQuoteChar[0] = quoteChar;
     }
 
-    // put a full member name. Uses default JSON quote style
+    /**
+     * Write a complete, double-quoted object member name and transition to
+     * expecting a colon.
+     * Throws `JSONIopipeException` if not currently inside an object at a
+     * position where a member name is expected.
+     *
+     * Params:
+     *   memberName = The member name to write.
+     */
     void addMemberName(const(char)[] memberName)
     {
         if (!inObj || (_state != State.First && _state != State.Member))
@@ -259,7 +338,17 @@ public:
         endString();
     }
 
-    // put a full member name. Uses default JSON quote style
+    /**
+     * JSON5 only. Write a complete object member name using the specified
+     * quoting style and transition to expecting a colon.
+     * Throws `JSONIopipeException` if not currently inside an object at a
+     * position where a member name is expected, or if `style` is `Symbol` and
+     * `memberName` is not a valid JSON5 identifier.
+     *
+     * Params:
+     *   memberName = The member name to write.
+     *   style      = How to quote the member name.
+     */
     static if(JSON5)
         void addMemberName(const(char)[] memberName, MemberNameStyle style)
     {
@@ -294,12 +383,18 @@ PUT_SYMBOL:
         }
     }
 
-    // add string data. The mode of adding data can be one of three:
-    // 1. addEscapes - any invalid string characters per the JSON spec will be replaced with escapes
-    // 2. passThru - data will be added as is, no validation.
-    // 3. validate - this string data must be valid JSON string data, invalid
-    // data will cause the function to throw. Note that splitting escape
-    // sequences across calls to this function will fail. e.g. `addStringData("abc\\"); addStringData("n");`
+    /**
+     * Write data into the currently open string according to `mode`.
+     * May be called multiple times between `beginString` and `endString`.
+     * Throws `JSONIopipeException` if not currently inside a string, or if
+     * `mode` is `StringMode.Validate` and `data` contains invalid JSON string
+     * content. Note that escape sequences must not be split across calls when
+     * using `StringMode.Validate`.
+     *
+     * Params:
+     *   mode = Controls how `data` is interpreted; see `StringMode`.
+     *   data = The content to append, converted to string data.
+     */
     void addStringData(StringMode mode = StringMode.AddEscapes, T)(T data)
     {
         if (_state != State.String && _state != State.MemberString)
@@ -339,6 +434,11 @@ PUT_SYMBOL:
         }
     }
 
+    /**
+     * Write the closing quote character for the current string and transition
+     * to the next expected state.
+     * Throws `JSONIopipeException` if not currently inside a string.
+     */
     void endString()
     {
         if (_state == State.String)
@@ -355,6 +455,15 @@ PUT_SYMBOL:
             throw new JSONIopipeException("Attempting to end a string when not in a string");
     }
 
+    /**
+     * Write a numeric value to the output.
+     * Throws `JSONIopipeException` if the current state does not allow a value,
+     * or if the resulting text is not a valid JSON/JSON5 number.
+     *
+     * Params:
+     *   value  = The numeric value to write.
+     *   format = How to format `value` using `std.format`.
+     */
     void addNumber(T)(T value, string format = "%s")
     {
         if (!canAddValue())
@@ -369,6 +478,13 @@ PUT_SYMBOL:
         _state = (stackLen == 0) ? State.End : State.Comma;
     }
 
+    /**
+     * Write a JSON or JSON5 keyword literal to the output.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     *
+     * Params:
+     *   value = The keyword literal to write; see `KeywordValue`.
+     */
     void addKeywordValue(KeywordValue value)
     {
         if (!canAddValue())
@@ -379,6 +495,10 @@ PUT_SYMBOL:
         _state = (stackLen == 0) ? State.End : State.Comma;
     }
 
+    /**
+     * Write the `:` separator between an object member name and its value.
+     * Throws `JSONIopipeException` if a member name has not just been written.
+     */
     void addColon()
     {
         if(_state != State.Colon)
@@ -388,6 +508,10 @@ PUT_SYMBOL:
         _state = State.Value;
     }
 
+    /**
+     * Write the `,` separator between members of an object or array.
+     * Throws `JSONIopipeException` if a complete value inside an aggregate has not just been written.
+     */
     void addComma()
     {
         if(_state != State.Comma)
@@ -397,6 +521,14 @@ PUT_SYMBOL:
         _state = State.Member;
     }
 
+    /**
+     * Write raw whitespace into the output between tokens.
+     * Throws `JSONIopipeException` if currently inside a string.
+     *
+     * Params:
+     *   validate = When `true`, validates that `data` contains only whitespace characters.
+     *   data     = The whitespace characters to write.
+     */
     void addWhitespace(bool validate = false, T)(T data) // if (isSomeCharRange!T)
     {
         if(_state == State.String || _state == State.MemberString)
@@ -409,6 +541,14 @@ PUT_SYMBOL:
         put(r, data);
     }
 
+    /**
+     * JSON5 only. Write a raw comment into the output between tokens.
+     * Throws `JSONIopipeException` if currently inside a string.
+     *
+     * Params:
+     *   validate    = When `true`, validates that `commentData` is a well-formed JSON5 comment.
+     *   commentData = The comment text to write, including the comment delimiters.
+     */
     static if(JSON5)
         void addComment(bool validate = false, T)(T commentData) // if (isSomeCharRange!T)
     {
@@ -422,6 +562,11 @@ PUT_SYMBOL:
         put(r, commentData);
     }
 
+    /**
+     * Release all characters written so far from the output chain's window,
+     * allowing the underlying buffer to reclaim that space. For push iopipes,
+     * this queues the data for writing to the output stream.
+     */
     void flushWritten()
     {
         outputChain.release(pos);
@@ -429,6 +574,18 @@ PUT_SYMBOL:
     }
 }
 
+/**
+ * JSON writer that wraps `JSONOutputter` and adds indentation, newlines, and
+ * configurable colon spacing to produce human-readable output. Additional
+ * whitespace can be added as needed. The public interface mirrors
+ * `JSONOutputter`.
+ *
+ * Use `jsonFormatter` for IFTI construction.
+ *
+ * Params:
+ *   Chain = A text iopipe to write JSON into.
+ *   JSON5 = When `true`, enables JSON5 extensions.
+ */
 struct JSONStandardFormatter(Chain, bool JSON5 = false)
 if (isIopipe!Chain)
 {
@@ -454,6 +611,15 @@ private:
     }
 
 public:
+    /**
+     * Construct a `JSONStandardFormatter` that writes into `chain`.
+     *
+     * Params:
+     *   chain         = The output iopipe to write JSON into.
+     *   pos           = Initial write offset within `chain`'s window.
+     *   indent        = Number of spaces per indentation level.
+     *   colonSpacing  = Whitespace style around the `:` separator.
+     */
     this(ref Chain chain, size_t pos = 0, int indent = 4, ColonSpacing colonSpacing = ColonSpacing.After) {
         assert(indent >= 0);
         this.outputter = typeof(outputter)(chain, pos);
@@ -461,34 +627,68 @@ public:
         this.colonSpacing = colonSpacing;
     }
 
+    /// The current state of the output state machine.
     State state() const @property nothrow => outputter.state();
+    /// The number of characters written into the output chain's window so far.
     size_t position() const @property nothrow => outputter.position();
+    /// A slice of the output chain's window containing all characters written so far.
     auto window() => outputter.window();
+    /// `true` when the innermost open aggregate is an object.
     bool inObj() const @property nothrow => outputter.inObj();
+    /// The number of currently open (not yet closed) objects and arrays.
     size_t depth() const @property nothrow => outputter.depth();
 
+    /**
+     * Write `{` to the output and push a new object onto the aggregate stack.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     */
     void beginObject() {
         spacingBeforeValue();
         outputter.beginObject();
     }
 
+    /**
+     * Write `[` to the output and push a new array onto the aggregate stack.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     */
     void beginArray() {
         spacingBeforeValue();
         outputter.beginArray();
     }
 
+    /**
+     * Close the innermost open object or array, writing `}` or `]` to the
+     * output. May be called on an empty aggregate, after a complete value, or —
+     * in JSON5 mode — after a trailing comma.
+     * Throws `JSONIopipeException` if no aggregate is open or the state does
+     * not allow closing.
+     */
     void endAggregate() {
         import std.algorithm : max;
         putIndent(max(outputter.depth, 1) - 1);
         outputter.endAggregate();
     }
 
+    /**
+     * Write an opening `"` and transition into string-writing mode.
+     * Follow with zero or more calls to `addStringData`, then `endString`.
+     * Throws `JSONIopipeException` if the current state does not allow a string.
+     */
     void beginString()
     {
         spacingBeforeValue();
         outputter.beginString();
     }
 
+    /**
+     * JSON5 only. Write an opening quote character and transition into
+     * string-writing mode, using the specified quote character.
+     * Follow with zero or more calls to `addStringData`, then `endString`.
+     * Throws `JSONIopipeException` if the current state does not allow a string.
+     *
+     * Params:
+     *   quoteChar = The quote character to use; must be `'` or `"`.
+     */
     static if(JSON5)
     void beginString(char quoteChar)
     {
@@ -497,12 +697,32 @@ public:
     }
 
 
+    /**
+     * Write a complete, double-quoted object member name and transition to
+     * expecting a colon.
+     * Throws `JSONIopipeException` if not currently inside an object at a
+     * position where a member name is expected.
+     *
+     * Params:
+     *   memberName = The member name to write.
+     */
     void addMemberName(const(char)[] memberName)
     {
         spacingBeforeValue();
         outputter.addMemberName(memberName);
     }
 
+    /**
+     * JSON5 only. Write a complete object member name using the specified
+     * quoting style and transition to expecting a colon.
+     * Throws `JSONIopipeException` if not currently inside an object at a
+     * position where a member name is expected, or if `style` is `Symbol` and
+     * `memberName` is not a valid JSON5 identifier.
+     *
+     * Params:
+     *   memberName = The member name to write.
+     *   style      = How to quote the member name.
+     */
     static if(JSON5)
     void addMemberName(const(char)[] memberName, MemberNameStyle style)
     {
@@ -510,22 +730,60 @@ public:
         outputter.addMemberName(memberName, style);
     }
 
+    /**
+     * Write data into the currently open string according to `mode`.
+     * May be called multiple times between `beginString` and `endString`.
+     * Throws `JSONIopipeException` if not currently inside a string, or if
+     * `mode` is `StringMode.Validate` and `data` contains invalid JSON string
+     * content. Note that escape sequences must not be split across calls when
+     * using `StringMode.Validate`.
+     *
+     * Params:
+     *   mode = Controls how `data` is interpreted; see `StringMode`.
+     *   data = The content to append, converted to string data.
+     */
     void addStringData(StringMode mode = StringMode.AddEscapes, T)(T data) => outputter.addStringData!mode(data);
 
+    /**
+     * Write the closing quote character for the current string and transition
+     * to the next expected state.
+     * Throws `JSONIopipeException` if not currently inside a string.
+     */
     void endString() => outputter.endString();
 
+    /**
+     * Write a numeric value to the output.
+     * Throws `JSONIopipeException` if the current state does not allow a value,
+     * or if the resulting text is not a valid JSON/JSON5 number.
+     *
+     * Params:
+     *   value  = The numeric value to write.
+     *   format = How to format `value` using `std.format`.
+     */
     void addNumber(T)(T value, string format = "%s")
     {
         spacingBeforeValue();
         outputter.addNumber(value, format);
     }
 
+    /**
+     * Write a JSON or JSON5 keyword literal to the output.
+     * Throws `JSONIopipeException` if the current state does not allow a value.
+     *
+     * Params:
+     *   value = The keyword literal to write; see `KeywordValue`.
+     */
     void addKeywordValue(KeywordValue value)
     {
         spacingBeforeValue();
         outputter.addKeywordValue(value);
     }
 
+    /**
+     * Write the `:` separator between an object member name and its value,
+     * with whitespace applied according to the `colonSpacing` setting.
+     * Throws `JSONIopipeException` if a member name has not just been written.
+     */
     void addColon()
     {
         final switch(colonSpacing) with(ColonSpacing)
@@ -543,15 +801,52 @@ public:
         }
     }
 
+    /**
+     * Write the `,` separator between members of an object or array.
+     * Throws `JSONIopipeException` if a complete value inside an aggregate has not just been written.
+     */
     void addComma() => outputter.addComma();
+
+    /**
+     * Write raw whitespace into the output between tokens, in addition to
+     * the automatic indentation rules.
+     * Throws `JSONIopipeException` if currently inside a string.
+     *
+     * Params:
+     *   validate = When `true`, validates that `data` contains only whitespace characters.
+     *   data     = The whitespace characters to write.
+     */
     void addWhitespace(bool validate = false, T)(T data) => outputter.addWhitespace!validate(data);
 
+    /**
+     * JSON5 only. Write a raw comment into the output between tokens.
+     * Throws `JSONIopipeException` if currently inside a string.
+     *
+     * Params:
+     *   validate    = When `true`, validates that `commentData` is a well-formed JSON5 comment.
+     *   commentData = The comment text to write, including the comment delimiters.
+     */
     static if(JSON5)
         void addComment(bool validate = false, T)(T commentData) => outputter.addComment!validate(commentData);
 
+    /**
+     * Release all characters written so far from the output chain's window,
+     * allowing the underlying buffer to reclaim that space. For push iopipes,
+     * this queues the data for writing to the output stream.
+     */
     void flushWritten() => outputter.flushWritten();
 }
 
+/**
+ * Construct a `JSONStandardFormatter` for `chain`.
+ *
+ * Params:
+ *   JSON5         = When `true`, enables JSON5 extensions.
+ *   chain         = The output iopipe to write JSON into.
+ *   pos           = Initial write offset within `chain`'s window.
+ *   indent        = Number of spaces per indentation level.
+ *   colonSpacing  = Whitespace style around the `:` separator.
+ */
 auto jsonFormatter(bool JSON5 = false, Chain)(ref Chain chain, size_t pos = 0, int indent=4, ColonSpacing colonSpacing = ColonSpacing.After)
 {
     return JSONStandardFormatter!(Chain, JSON5)(chain, pos, indent, colonSpacing);
