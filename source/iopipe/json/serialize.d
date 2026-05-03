@@ -1941,14 +1941,14 @@ unittest
  * Result:
  *      AliasSeq!("<char>", "<escapesequence>", "<char>", "<escapesequence>", ...);
  */
-private template jsonEscapeSubstitutions()
+package template jsonEscapeSubstitutions()
 {
     import std.algorithm.iteration;
     import std.range;
     import std.ascii: ControlChar;
 
     // Control characters [0,31 aka 0x1f] + 2 special characters '"' and '\'
-    private enum charactersToEscape = chain(only('\"', '\\'), iota(0x1f + 1));
+    private enum charactersToEscape = chain(only('\\'), iota(0x1f + 1));
 
     private struct JsonEscapeMapping {
         char chr;
@@ -1958,8 +1958,7 @@ private template jsonEscapeSubstitutions()
     /* Special characters we have to (in case of '"' and '\') per the spec or want to escape seperately for readability
     * Everything else gets converted to the "\uxxxx" unicode escape
     */
-    private enum JsonEscapeMapping[7] JSON_ESCAPES = [
-        {'\"', `\"`},
+    private enum JsonEscapeMapping[6] JSON_ESCAPES = [
         {'\\', `\\`},
         {ControlChar.bs, `\b`},
         {ControlChar.lf, `\n`},
@@ -2002,7 +2001,7 @@ void serializeImpl(P, T, Char)(ref P Policy, scope void delegate(const(Char)[]) 
 {
     import std.algorithm.iteration: substitute;
     w(`"`);
-    put(w, val.substitute!(jsonEscapeSubstitutions!()));
+    put(w, val.substitute(jsonEscapeSubstitutions!(), `"`, `\"`));
     w(`"`);
 }
 
