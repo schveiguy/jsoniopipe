@@ -57,8 +57,8 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     }
 
     void onField(JT, T, Element, C)(
-        ref JT tokenizer, 
-        ref T item, 
+        ref JT tokenizer,
+        ref T item,
         Element key,
         ref C context
     ) {
@@ -797,20 +797,20 @@ unittest {
     // Test emptyObject first
     auto jsonStr1 = `{"emptyObject": {}}`;
     auto jv1 = deserialize!(JSONValue!string)(jsonStr1);
-    
+
     assert(jv1.type == JSONType.Obj);
     assert("emptyObject" in jv1.object);
-    
+
     auto emptyObj = jv1.object["emptyObject"];
     assert(emptyObj.type == JSONType.Obj);
     assert(emptyObj.object.length == 0);
 
     auto jsonStr2 = `{"emptyArray": []}`;
     auto jv2 = deserialize!(JSONValue!string)(jsonStr2);
-    
+
     assert(jv2.type == JSONType.Obj);
     assert("emptyArray" in jv2.object);
-    
+
     auto emptyArr = jv2.object["emptyArray"];
     assert(emptyArr.type == JSONType.Array);
     assert(emptyArr.array.length == 0);
@@ -1999,7 +1999,6 @@ void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (is(T
             break;
         case Bool:
             policy.serializeImpl(w, val.boolean);
-            w.addKeywordValue(val.boolean ? KeywordValue.True : KeywordValue.False);
             break;
         }
     }
@@ -2272,6 +2271,31 @@ unittest
     assert(j.serialize == `{"a":[1,2,3],"b":null}`);
 }
 
+unittest
+{
+    // test serializing JSONValue with Bool type
+    import std.exception : assertThrown;
+    JSONValue!string jv;
+    jv.type = JSONType.Bool;
+    jv.boolean = true;
+    auto s = jv.serialize;
+    assert(s == "true", "got: '" ~ s ~ "'");
+    jv.boolean = false;
+    s = jv.serialize;
+    assert(s == "false", "got: '" ~ s ~ "'");
+
+    // also test roundtrip
+    auto j = deserialize!(JSONValue!string)(`true`);
+    assert(j.type == JSONType.Bool);
+    assert(j.boolean == true);
+    assert(j.serialize == "true", "got: '" ~ j.serialize ~ "'");
+
+    j = deserialize!(JSONValue!string)(`false`);
+    assert(j.type == JSONType.Bool);
+    assert(j.boolean == false);
+    assert(j.serialize == "false", "got: '" ~ j.serialize ~ "'");
+}
+
 // JSON5 tests
 unittest
 {
@@ -2408,7 +2432,7 @@ unittest
             enum dontcare = S.init;
             return dontcare;
         }
-        static if(SwapTemplateArgsOrder) 
+        static if(SwapTemplateArgsOrder)
             static S fromJSON(P, JT)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
         else
             static S fromJSON(JT, P)(ref JT tokenizer, ref P policy) => fromJSONImpl(tokenizer, policy);
