@@ -49,6 +49,42 @@ Simple tokens just provide the positions of the slice. JSON strings and numbers 
 * `Infinity` - The slice contains positive or negative infinity. This will only appear when parsing JSON5 streams.
 * `NaN` - The slice contains positive or negative NaN. This will only appear when parsing JSON5 streams.
 
+## Writer and Formatter
+
+The `iopipe.json.formatter` module provides the types for writing JSON output to a character iopipe. Output is driven through a state-machine API that enforces correct JSON structure, throwing `JSONIopipeException` if methods are called out of order.
+
+The types and enumerations in this module are:
+
+* `JSONWriter` - the low-level writer. Emits tokens directly to the output iopipe with no added whitespace. Enforces the JSON (or JSON5) structural rules via an internal state machine.
+* `JSONStandardFormatter` - wraps `JSONWriter` and adds indentation, newlines, and configurable colon spacing for human-readable output. Its public interface mirrors `JSONWriter`.
+* `JSONWriterInterface` - an abstract D interface exposing the writer API. Use this when you need virtual dispatch over different writer or formatter types, for example in D classes with `toJSON` methods.
+* `JSONWriterObject` - a concrete class that wraps any `JSONWriter` or `JSONStandardFormatter` and implements `JSONWriterInterface`.
+* `ColonSpacing` - controls the whitespace placed around the `:` separator in object members: `None`, `After` (a single space after the colon, which is the default), or `Both` (a single space on each side).
+* `MemberNameStyle` - JSON5 only. Controls how object member names are quoted: `DoubleQuote`, `SingleQuote`, `Symbol` (bare identifier, no quotes), or `Auto` (chooses the best style automatically).
+* `StringMode` - controls how data passed to `addStringData` is interpreted: `AddEscapes` (default, escapes any characters that are invalid inside a JSON string), `PassThru` (written as-is with no escaping or validation), or `Validate` (verifies the data is already valid JSON string content and throws if not).
+* `KeywordValue` - an enumeration of the JSON and JSON5 keyword literals: `Null`, `True`, `False`, and the JSON5 extensions `Infinity`, `NegativeInfinity`, and `NaN`.
+* `State` - the current position in the output state machine. Exposed via the `state` property so that formatters layered on top can make spacing decisions without duplicating state tracking.
+
+Construct a `JSONWriter` with `jsonWriter!(JSON5)(chain, pos)` or a `JSONStandardFormatter` with `jsonFormatter!(JSON5)(chain, pos, indent, colonSpacing)`. Both use IFTI (implicit function template instantiation) to infer the chain type. The `ReleaseOnWrite` template parameter (default `yes`) controls buffer behaviour: when set to `yes`, written data is automatically released from the output window after every write call, forwarding it downstream immediately and keeping memory usage low. When set to `no`, data accumulates in the window and can be inspected via the `window` property; in that case, call `flushWritten()` manually to release already-written data when needed.
+
+Writing a JSON value follows a straightforward call sequence. For an object:
+
+1. `beginObject()` — open the `{`
+2. For each member: `nextMember()` (a no-op for the first member, emits `,` for subsequent ones), `addMemberName(name)`, `addColon()`, then a value call
+3. `endAggregate()` — close the `}`
+
+For an array:
+
+1. `beginArray()` — open the `[`
+2. For each element: `nextMember()` (a no-op for the first element, emits `,` for subsequent ones), then a value call (`addNumber`, `addKeywordValue`, `beginString`/`addStringData`/`endString`, or a nested `beginObject`/`beginArray`)
+3. `endAggregate()` — close the `]`
+
+`addMemberName(name)` is a convenience equivalent to calling `beginString()`, `addStringData(name)`, `endString()`. To write member names manually — for example, to build the name from multiple pieces — use those three calls directly.
+
+Strings are written in three steps: `beginString()` opens the quote, zero or more `addStringData` calls append content (with escaping controlled by the `StringMode` template parameter), and `endString()` closes the quote. `addStringData` accepts any value formattable by `std.format`.
+
+JSON5 extensions are enabled by setting the `JSON5` template parameter to `true` on the writer or formatter. This unlocks single-quoted strings (`beginString('\'')`), bare symbol member names (`addMemberName(name, MemberNameStyle.Symbol)` or `Auto`), trailing commas (JSON5 allows `endAggregate` after the state following the last comma), and `addComment` for writing raw comment text between tokens.
+
 ## Serializer and Deserializer
 
 Please see the wiki for more details on serialization and deserialization. (TODO: move that here)
