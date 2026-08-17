@@ -506,13 +506,13 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
             // just copy the two surrogates to the stream
             chain.window[targetPos[0]++] = cast(wchar)value;
             chain.window[targetPos[0]++] = pair;
-            value = ((value & 0x3ff) << 10) + (pair & 0x3ff);
+            value = 0x1_0000 + ((value & 0x3ff) << 10) + (pair & 0x3ff);
             return value;
         }
         else
         {
             // just build the dchar out of it.
-            value = ((value & 0x3ff) << 10) + (pair & 0x3ff);
+            value = 0x1_0000 + ((value & 0x3ff) << 10) + (pair & 0x3ff);
         }
     }
 
@@ -2446,12 +2446,13 @@ unittest
 
 version(unittest)
 {
-    bool check(Element)(Element item, JSONToken token, string expected)
+    bool check(Element, String)(Element item, JSONToken token, String expected)
     {
         if(item.token == token && item.data == expected)
             return true;
         import std.stdio;
-        writeln(item);
+        // write the item
+        writeln(i"Failed element: token=$(item.token), hint=$(item.hint), data=$(item.data)");
         return false;
     }
 }
@@ -2668,4 +2669,38 @@ unittest
         assert(check(parser.next, EOF, ""));
         assert(parser._chain.pos == jsonData.length);
     }
+}
+
+// https://github.com/schveiguy/jsoniopipe/issues/86
+// Surrogates were not properly parsed
+unittest
+{
+    void test(String)() {
+        String[String] tests = [
+            `"\ud83d\ude00"` : "\U0001F600",
+            `"\ud800\udc00"` : "\U00010000",
+            `"\ud834\udd1e"` : "\U0001D11E",
+            `"\udbff\udfff"` : "\U0010FFFF",
+        ];
+
+        foreach(k, v; tests) {
+            auto parser = k.dup.jsonTokenizer!(ParseConfig(replaceEscapes: true));
+            assert(check(parser.next, JSONToken.String, v));
+            assert(check(parser.next, JSONToken.EOF, String.init));
+
+            // also check parseUnicodeEscape directly to make sure the return value is correct
+            import std.utf: decode;
+            auto mutKey = k.dup;
+            size_t pos = 0;
+            size_t targetPos = 0;
+            dchar c = decode(v, pos);
+            pos = 3;
+            bool windowChanged;
+            assert(parseUnicodeEscape(mutKey, windowChanged, pos, targetPos) == c);
+        }
+    }
+
+    test!string();
+    test!wstring();
+    test!dstring();
 }
