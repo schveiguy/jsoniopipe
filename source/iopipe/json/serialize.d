@@ -786,7 +786,8 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
             break;
         case Null:
             item.type = JSONType.Null;
-            tokenizer.nextSignificant(); // consume the null
+            // consume the null, validating it.
+            cast(void)tokenizer.next.jsonExpect(JSONToken.Null, "Parsing Null");
             break;
         default:
             throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
