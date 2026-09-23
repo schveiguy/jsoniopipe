@@ -786,7 +786,8 @@ void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (i
             break;
         case Null:
             item.type = JSONType.Null;
-            tokenizer.nextSignificant(); // consume the null
+            // consume the null, validating it.
+            cast(void)tokenizer.nextSignificant().jsonExpect(JSONToken.Null, "Parsing Null");
             break;
         default:
             throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
@@ -2515,4 +2516,15 @@ unittest
 	import std.algorithm;
 
 	assert(iota(10).map!"a+1".serialize == "[1,2,3,4,5,6,7,8,9,10]");
+}
+
+unittest
+{
+    bool passed = false;
+    try {
+        "[nule]".deserialize!(JSONValue!string);
+    }catch(JSONIopipeException ex) {
+        passed = true;
+    }
+    assert(passed);
 }
