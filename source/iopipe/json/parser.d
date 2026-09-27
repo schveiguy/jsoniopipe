@@ -464,6 +464,11 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
     import std.conv: parse;
     auto chars = chain.window[pos .. pos + 4];
 
+    import std.ascii : isHexDigit;
+    if(!isHexDigit(chars[0])) {
+        // avoid an exception
+        return dchar.init;
+    }
     dchar value = parse!ushort(chars, 16);
     if(chars.length)
     {
@@ -489,6 +494,10 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
             return dchar.init;
         ++pos;
         chars = chars[2 .. $];
+
+        if(!isHexDigit(chars[0])) {
+            return dchar.init;
+        }
         wchar pair = parse!ushort(chars, 16);
         if(chars.length)
         {
@@ -497,7 +506,7 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
         }
         pos += 4;
 
-        if(pair < 0xdc00 || value > 0xdfff)
+        if(pair < 0xdc00 || pair > 0xdfff)
             // invalid sequence
             return dchar.init;
 
@@ -514,6 +523,11 @@ private dchar parseUnicodeEscape(Chain, TP...)(ref Chain chain, ref bool windowC
             // just build the dchar out of it.
             value = 0x1_0000 + ((value & 0x3ff) << 10) + (pair & 0x3ff);
         }
+    }
+    else if(value >= 0xdc00 && value <= 0xdfff)
+    {
+        // invalid low surrogate
+        return dchar.init;
     }
 
     static if(replaceEscapes)
