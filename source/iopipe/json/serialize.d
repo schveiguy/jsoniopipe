@@ -526,26 +526,26 @@ auto jsonExpect(JSONToken token, JSONToken expectedToken, string msg="Error", st
 }
 
 /**
- * Expect the given JSONItem or token to not be an Error item
+ * Expect the given JSONItem or token to not be an Error or EOF
  * Parameters:
  *      item: The item to check
  *      token: The token to check
  *      msg: Optional error message in case of mismatch
  * Throws:
- *	JSONIopipeException if the item is an Error item.
+ *	JSONIopipeException if the item/token is an Error or EOF.
  * Returns:
  *      the input item/token
  */
-auto jsonExpectNoError(Item)(Item item, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+auto jsonExpectValid(Item)(Item item, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    cast(void)jsonExpectNoError(item.token, msg, file, line);
+    cast(void)jsonExpectValid(item.token, msg, file, line);
     return item;
 }
 
 /// ditto
-auto jsonExpectNoError(JSONToken token, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
+auto jsonExpectValid(JSONToken token, string msg="Error", string file = __FILE__, size_t line = __LINE__) @safe
 {
-    if(token == JSONToken.Error)
+    if(token == JSONToken.Error || token == JSONToken.EOF)
         throw new JSONIopipeException(msg, file, line);
     return token;
 }
@@ -856,14 +856,14 @@ void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy re
     {
         // The parser is validating the object structure for us.
         auto nameItem = tokenizer.nextSignificant()
-            .jsonExpectNoError("Expexting member name of " ~ T.stringof);
+            .jsonExpectValid("Expecting member name of " ~ T.stringof);
 
         // Have to call nameItem.data() on each access, as the returned string would get invalidated by calls to tokenizer.next()
         // TODO: handle names with unicode escapes
         scope name = () => nameItem.data;
 
         cast(void)tokenizer.nextSignificant()
-            .jsonExpectNoError("Expecting colon when parsing " ~ T.stringof);
+            .jsonExpectValid("Expecting colon when parsing " ~ T.stringof);
 OBJ_MEMBER_SWITCH:
         switch(name())
         {
@@ -929,7 +929,7 @@ OBJ_MEMBER_SWITCH:
 
     // end of object must come next.
     cast(void)tokenizer.nextSignificant()
-        .jsonExpectNoError("Expecting object end while parsing " ~ T.stringof);
+        .jsonExpectValid("Expecting object end while parsing " ~ T.stringof);
 
     // ensure all members visited
     static if(members.length)
@@ -1343,18 +1343,18 @@ void deserializeObject(T, JT, Policy)(
     {
         // Key validation is already done in the parser.
         auto key = tokenizer.nextSignificant
-            .jsonExpectNoError("Expecting comma and/or member name of " ~ T.stringof);
+            .jsonExpectValid("Expecting comma and/or member name of " ~ T.stringof);
 
         // colon
         tokenizer.nextSignificant()
-            .jsonExpectNoError("Expecting colon when parsing " ~ T.stringof);
+            .jsonExpectValid("Expecting colon when parsing " ~ T.stringof);
 
         policy.onField(tokenizer, item, key, context);
     }
 
     // expect the object end
     tokenizer.nextSignificant()
-            .jsonExpectNoError("Expecting object end while parsing " ~ T.stringof);
+            .jsonExpectValid("Expecting object end while parsing " ~ T.stringof);
 
     // End deserialization
     policy.onObjectEnd(tokenizer, item, context);
@@ -1399,7 +1399,7 @@ void deserializeArray(T, JT, Policy)(
 
     // verify we got an end array element
     tokenizer.nextSignificant
-        .jsonExpectNoError("Expecting array end while parsing " ~ T.stringof);
+        .jsonExpectValid("Expecting array end while parsing " ~ T.stringof);
 
     policy.onArrayEnd(tokenizer, item, elementCount, context);
 }
@@ -2548,5 +2548,13 @@ unittest
 {
     expectIopipeException({
         auto v = "[,1]".deserialize!(JSONValue!string);
+    });
+}
+
+// unclosed object
+unittest
+{
+    expectIopipeException({
+        auto v = `{"a":1`.deserialize!(JSONValue!string);
     });
 }
