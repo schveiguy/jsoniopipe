@@ -2531,6 +2531,9 @@ version(unittest)
         catch(JSONIopipeException ex) {
             passed = true;
         }
+        catch(Exception ex) {
+            // not passing, we expect exactly the IOPipe exception
+        }
         assert(passed);
     }
 }
@@ -2556,5 +2559,33 @@ unittest
 {
     expectIopipeException({
         auto v = `{"a":1`.deserialize!(JSONValue!string);
+    });
+}
+
+// non-hex unicode escape
+unittest
+{
+    expectIopipeException({
+        auto v = `["\uZZZZ"]`.deserialize!(JSONValue!string);
+    });
+}
+
+// lone low surrogate
+unittest
+{
+    expectIopipeException({
+        auto v = `["\udead"]`.deserialize!(JSONValue!string);
+    });
+}
+
+// second pair not valid
+unittest
+{
+    expectIopipeException({
+        auto v = `["\ud83d\uffff"]`.deserialize!(JSONValue!string);
+    });
+
+    expectIopipeException({
+        auto v = `["\ud83d\ue000"]`.deserialize!(JSONValue!string);
     });
 }
