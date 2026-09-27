@@ -1646,6 +1646,7 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
         BitArray stack;
         size_t stackLen;
         State state;
+        JSONToken lastToken;
 
         bool inObj()
         {
@@ -1719,21 +1720,22 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
     Window window() => Window(&this, buffer.window);
 
     size_t extend(size_t elements) {
-        // if we already hit EOF, stop.
-        if(state == State.End && buffer.window.length > 0 && buffer.window[$-1].token == JSONToken.EOF)
+        // if we already hit end, stop, nothing else can come in.
+        if(state == State.End)
             return 0;
 
         if(buffer.extend(1) == 0)
         {
             // Cannot extend the buffer for some reason, go to end state.
             state = State.End;
+            lastToken = JSONToken.Error;
             return 0;
         }
 
-
         auto item = &(buffer.window[$-1] = jsonItem!config(source, pos, sourceOffset));
+        lastToken = item.token;
 
-        if(item.token == JSONToken.EOF) {
+        if(item.token == JSONToken.EOF || item.token == JSONToken.Error) {
             state = State.End;
             return 1;
         }
@@ -1855,14 +1857,21 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
             item._offset = item.position - sourceOffset;
     }
 
-    // generate an "EOF" element as if it were at the end of the buffer without
-    // having to store it in the buffer.
-    private Element eofElement() {
-        auto item = JSONItem(source.window.length, source.window.length + sourceOffset, 0, JSONToken.EOF);
+    private JSONToken finalToken() {
+        return lastToken == JSONToken.Error ? JSONToken.Error : JSONToken.EOF;
+    }
+
+    // generate a "fake" element as if it were at the end of the list, with no
+    // length. The token will match whatever the last element parsed was.
+    private Element finalElement() {
+        auto item = JSONItem(_offset: source.window.length, position: source.window.length + sourceOffset, token: finalToken);
         return Element(item, &this);
     }
 
     JSONToken peekToken() {
+        if(state == State.End) {
+            return finalToken;
+        }
         // peek at the next token from the chain.
         return jsonTok!config(source, pos);
     }
@@ -2184,9 +2193,8 @@ struct JSONTokenizer(Chain, ParseConfig cfg)
         {
             if(_chain.extend(1) == 0)
             {
-                if(_chain.window.length == 0)
-                    return _chain.eofElement;
-                return _chain.window[$-1];
+                // No more items coming. Get a fake final element
+                return _chain.finalElement();
             }
         }
 
