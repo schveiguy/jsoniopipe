@@ -49,6 +49,13 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
         this.maxDepthAvailable = maxDepthAvailable;
     }
 
+    auto onArrayBegin(JT, T)(ref JT tokenizer, ref T item) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return .onArrayBegin(this, tokenizer, item);
+    }
+
     auto onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
         if (--maxDepthAvailable < 0) {
             throw new JSONIopipeException("Maximum parse depth exceeded");
@@ -70,6 +77,11 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
 
     void onObjectEnd(JT, T, C)(ref JT tokenizer, ref T item, ref C context) {
         .onObjectEnd(this, tokenizer, item, context);
+        ++maxDepthAvailable;
+    }
+
+    void onArrayEnd(JT, T, C)(ref JT tokenizer, ref T item, size_t length, ref C context) {
+        .onArrayEnd(this, tokenizer, item, length, context);
         ++maxDepthAvailable;
     }
 }
@@ -1388,7 +1400,7 @@ void deserializeArray(T, JT, Policy)(
 {
     tokenizer.nextSignificant
         .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-    auto context = onArrayBegin(policy, tokenizer, item);
+    auto context = policy.onArrayBegin(tokenizer, item);
 
     // Parse array elements
     size_t elementCount = 0;
@@ -2533,8 +2545,9 @@ version(unittest)
         }
         catch(Exception ex) {
             // not passing, we expect exactly the IOPipe exception
+            assert(false, i"Expected exception JSONIopipeException, instead got $(typeid(ex)) with message $(ex.msg)".text);
         }
-        assert(passed);
+        assert(passed, "Expected exception JSONIopipeException, but parsing succeeded");
     }
 }
 
@@ -2587,5 +2600,22 @@ unittest
 
     expectIopipeException({
         auto v = `["\ud83d\ue000"]`.deserialize!(JSONValue!string);
+    });
+}
+
+// depth limit
+unittest
+{
+    import std.range;
+    import std.algorithm;
+    string largeDepthObj = `{"obj":`.repeat(100).chain("}".repeat(100)).joiner.to!string;
+
+    expectIopipeException({
+        auto v = largeDepthObj.deserialize!(JSONValue!string);
+    });
+
+    string largeDepthArray = '['.repeat(100).chain(']'.repeat(100)).to!string;
+    expectIopipeException({
+        auto v = largeDepthArray.deserialize!(JSONValue!string);
     });
 }
