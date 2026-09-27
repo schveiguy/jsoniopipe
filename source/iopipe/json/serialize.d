@@ -2518,13 +2518,35 @@ unittest
 	assert(iota(10).map!"a+1".serialize == "[1,2,3,4,5,6,7,8,9,10]");
 }
 
+// CONFORMANCE TESTING. Much of this came from tests from issue #86
+
+version(unittest)
+{
+    private void expectIopipeException(void delegate() dg)
+    {
+        bool passed = false;
+        try {
+            dg();
+        }
+        catch(JSONIopipeException ex) {
+            passed = true;
+        }
+        assert(passed);
+    }
+}
+
+// null parsing
 unittest
 {
-    bool passed = false;
-    try {
+    expectIopipeException({
         "[nule]".deserialize!(JSONValue!string);
-    }catch(JSONIopipeException ex) {
-        passed = true;
-    }
-    assert(passed);
+    });
+}
+
+// leading comma array
+unittest
+{
+    expectIopipeException({
+        auto v = "[,1]".deserialize!(JSONValue!string);
+    });
 }

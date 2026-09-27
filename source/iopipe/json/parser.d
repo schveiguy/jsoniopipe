@@ -1790,14 +1790,14 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
                     if(item.token == String || item.token == Symbol)
                         state = State.Colon;
                     else
-                        item.token = JSONToken.Error;
+                        goto case State.End;
                 }
                 else
                 {
                     if(item.token == String)
                         state = State.Colon;
                     else
-                        item.token = JSONToken.Error;
+                        goto case State.End;
                 }
                 break;
             }
@@ -1807,7 +1807,7 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
             if(item.token == Colon)
                 state = State.Value;
             else
-                item.token = JSONToken.Error;
+                goto case State.End;
             break;
         case State.Value:
             if(item.token.isValue)
@@ -1821,7 +1821,7 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
                     state = State.Comma;
             }
             else
-                item.token = JSONToken.Error;
+                goto case State.End;
             break;
         case State.Comma:
             // can end the object here, or get a comma
@@ -1830,11 +1830,13 @@ struct JSONPipe(SourceChain, Allocator = GCNoPointerAllocator, ParseConfig cfg =
             else if(item.token == Comma)
                 state = State.Member;
             else
-                item.token = JSONToken.Error;
+                goto case State.End;
             break;
         case State.End:
-            // this is handled outside the switch statement
-            assert(0);
+            // this is an error, we use this as a catch-all
+            item.token = JSONToken.Error;
+            state = State.End;
+            break;
         }
 
         return 1;
