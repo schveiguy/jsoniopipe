@@ -157,6 +157,48 @@ unittest
     assert(t.stuff.object["pet2"].object["age"].integer == 3);
 }
 
+unittest
+{
+    // Test adding handling for a `char` type
+    static struct CharSerializationPolicy
+    {
+        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item)
+        {
+            static if(is(T == char)) {
+                auto jsonItem = tokenizer.nextSignificant
+                    .jsonExpect(JSONToken.String, "Parsing char");
+
+                auto str = extractString!string(jsonItem);
+                if(str.length != 1)
+                    throw new JSONIopipeException("Parsed string does not fit in char");
+                item = str[0];
+            }
+            else return .deserializeImpl(this, tokenizer, item);
+        }
+    }
+
+    static struct CharHolder {
+        char c;
+        int x;
+        string str;
+    }
+
+    auto ch1 = `{"c": "x", "x" : 1, "str": "hello"}`.deserialize!CharHolder(CharSerializationPolicy());
+    assert(ch1 == CharHolder(c: 'x', x: 1, str: "hello"));
+
+    try {
+        auto ch2 = `{"c" : "xy", "x": 1, "str": "hello"}`.deserialize!CharHolder(CharSerializationPolicy());
+        assert(false, "Should not have succeeded");
+    }
+    catch(JSONIopipeException ex) {}
+
+    try {
+        auto ch3 = `{"c" : "", "x": 1, "str": "hello"}`.deserialize!CharHolder(CharSerializationPolicy());
+        assert(false, "Should not have succeeded");
+    }
+    catch(JSONIopipeException ex) {}
+}
+
 // shim for policies that do not specify a release policy
 private ReleasePolicy relPol(P)(ref P policy) => ReleasePolicy.afterMembers;
 
