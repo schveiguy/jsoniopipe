@@ -2164,23 +2164,33 @@ void serializeImpl(P, Writer)(ref P policy, ref Writer w, bool val)
 // elements that are in the buffer. If offset is specified, then that is where
 // the data will begin to be written.
 //
-size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val, size_t offset)
+// 3 options:
+// 1. Pass in an iopipe chain. A jsonWriter with default parameters will be constructed. You get back an element count of what was written
+// 2. Pass in a jsonWriter which is configured how you want. You get back an element count of what was written.
+// 3. No chain or writer, you get back a string.
+size_t serialize(T, Chain)(auto ref T val, auto ref Chain chain)
+if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
-    static assert (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)));
-    return serialize!relOnWrite(chain.jsonWriter!(false, relOnWrite)(offset), val);
+    return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), DefaultSerializationPolicy());
 }
 
-size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto ref Chain chain, auto ref T val)
+size_t serialize(T, Chain, Policy)(auto ref T val, auto ref Chain chain, auto ref T val, auto ref Policy policy)
+if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
-    static if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
-        auto writer = chain.jsonWriter!(false, relOnWrite);
-    else
-        // assume the writer is the the passed-in chain paramter
-        alias writer = chain;
+    return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), policy);
+}
 
+size_t serialize(T, Writer)(auto ref T val, auto ref Writer writer)
+if (isJSONWriter!Writer)
+{
+    return serialize(val, writer, DefaultSerializationPolicy());
+}
+
+size_t serialize(T, Writer, Policy)(auto ref T val, auto ref Writer writer, auto ref Policy policy)
+if (isJSONWriter!Writer)
+{
     // serialize the item, recursively
-    auto policy = DefaultSerializationPolicy();
-    serializeImpl(policy, writer, val);
+    policy.serializeImpl(writer, val);
 
     return writer.totalWritten;
 }
@@ -2188,9 +2198,15 @@ size_t serialize(ReleaseOnWrite relOnWrite = ReleaseOnWrite.yes, Chain, T)(auto 
 // convenience, using normal serialization to write to a string.
 string serialize(T)(auto ref T val)
 {
+    return serialize(val, DefaultSerializationPolicy());
+}
+
+string serialize(T, Policy)(auto ref T val, auto ref Policy policy)
+if(!isIopipe!Policy && !isJSONWriter!Policy)
+{
     import std.exception;
     auto outBuf = bufd!char;
-    auto dataSize = outBuf.serialize!(ReleaseOnWrite.no)(val);
+    auto dataSize = serialize(val, outBuf.jsonWriter!(false, ReleaseOnWrite.no), policy);
     auto result = outBuf.window[0 .. dataSize];
     result.assumeSafeAppend;
     return result.assumeUnique;
@@ -2317,6 +2333,44 @@ unittest
     assert(estr == `{"d":1.5,"s":"foo","x":3}`, estr);
     d = e;
     assert(d.serialize == estr);
+}
+
+// custom serialization with a policy
+unittest
+{
+    static struct Foo {
+        int x;
+    }
+
+    static struct SerializeFooAsString
+    {
+        void serializeImpl(T, Writer)(ref Writer w, ref T val) {
+            static if(is(T == Foo)) {
+                w.beginString();
+                w.addStringData(val.x.to!string);
+                w.endString();
+            }
+            else
+                .serializeImpl(this, w, val);
+        }
+    }
+
+    auto f = Foo(42);
+    assert(f.serialize == `{"x":42}`);
+    assert(f.serialize(SerializeFooAsString()) == `"42"`);
+
+    static struct Owner {
+        Foo foo;
+        string str;
+    }
+
+    auto o = Owner(
+            foo: Foo(100),
+            str: "hello"
+            );
+
+    assert(o.serialize == `{"foo":{"x":100},"str":"hello"}`);
+    assert(o.serialize(SerializeFooAsString()) == `{"foo":"100","str":"hello"}`);
 }
 
 unittest

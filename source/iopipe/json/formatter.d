@@ -74,6 +74,14 @@ package template jsonEscapeSubstitutions()
 }
 
 /**
+ * Determine if a type is a proper json formatter.
+ */
+enum isJSONWriter(T) =
+    is(T == JSONWriter!Args, Args...) ||
+    is(T == JSONStandardFormatter!Args, Args...) ||
+    is(T : JSONWriterInterface!Args, Args...);
+
+/**
  * Controls the whitespace placed around the colon separator between a JSON
  * object key and its value.
  */
