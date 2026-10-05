@@ -1385,9 +1385,11 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
         void addMemberName(const(char)[] memberName, MemberNameStyle style) => fmt.addMemberName(memberName, style);
     }
     void addStringData(const(char)[] data) => fmt.addStringData(data);
+    alias addStringData = JSONWriterInterface!(RealWriter.hasJSON5).addStringData;
     void endString() => fmt.endString();
 
     void addNumber(const(char)[] data) => fmt.addNumber(data);
+    alias addNumber = JSONWriterInterface!(RealWriter.hasJSON5).addNumber;
     void addKeywordValue(KeywordValue value) => fmt.addKeywordValue(value);
     void addColon() => fmt.addColon();
 
@@ -1400,4 +1402,27 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
     }
 
     void flushWritten() => fmt.flushWritten();
+}
+
+unittest
+{
+    // templated overloads inherited from JSONWriterInterface must remain
+    // reachable through a JSONWriterObject reference
+    auto chain = bufd!char();
+    auto writer = chain.jsonWriter!(false, ReleaseOnWrite.no);
+    auto wrapped = new JSONWriterObject!(typeof(writer))(writer);
+
+    wrapped.beginObject();
+    wrapped.addMemberName("n");
+    wrapped.addColon();
+    wrapped.addNumber(3);       // int content via the interface template
+    wrapped.nextMember();
+    wrapped.addMemberName("s");
+    wrapped.addColon();
+    wrapped.beginString();
+    wrapped.addStringData(42);  // non-string content, same hiding issue
+    wrapped.endString();
+    wrapped.endAggregate();
+
+    assert(wrapped.window == `{"n":3,"s":"42"}`, wrapped.window);
 }
