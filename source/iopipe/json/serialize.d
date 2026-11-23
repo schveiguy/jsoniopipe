@@ -120,21 +120,42 @@ auto contextWithPolicies(Policies...)(Policies policies) {
     return SerializeContext!Policies(policies);
 }
 
-struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
-    ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
+struct MaxDepthPolicy {
     int maxDepthAvailable = 64;
-
-    this(ReleasePolicy relPol) {
-        this.relPol = relPol;
-    }
-
     this(int maxDepthAvailable) {
         this.maxDepthAvailable = maxDepthAvailable;
     }
 
-    this(ReleasePolicy relPol, int maxDepthAvailable) {
+    bool onObjectBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return false;
+    }
+
+    bool onArrayBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return false;
+    }
+
+    bool onObjectEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        ++maxDepthAvailable;
+        return false;
+    }
+
+    bool onArrayEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, size_t length, ref C context, ref SC sc) {
+        ++maxDepthAvailable;
+        return false;
+    }
+}
+
+struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
+    ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
+
+    this(ReleasePolicy relPol) {
         this.relPol = relPol;
-        this.maxDepthAvailable = maxDepthAvailable;
     }
 
     Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == enum))
@@ -460,9 +481,6 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     }
 
     Handled onObjectBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
-        if (--maxDepthAvailable < 0) {
-            throw new JSONIopipeException("Maximum parse depth exceeded");
-        }
         static if(is(T == V[K], V, K)) {
             // no context for AAs.
         }
@@ -517,9 +535,6 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     }
 
     Handled onArrayBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
-        if (--maxDepthAvailable < 0) {
-            throw new JSONIopipeException("Maximum parse depth exceeded");
-        }
         return handled;
     }
 
@@ -684,7 +699,6 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
                 }
             }
         }
-        ++maxDepthAvailable;
         return handled;
     }
 
@@ -697,7 +711,6 @@ struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
                 throw new JSONIopipeException(format("Expected array of length %s for type `%s`, but only got length %s", T.length, T.stringof, length));
             }
         }
-        ++maxDepthAvailable;
         return handled;
     }
 }
@@ -744,7 +757,7 @@ unittest
         }
       }`;
 
-    auto policy1 = DefaultDeserializationPolicy!false(1); // Set max depth to 1
+    auto policy1 = MaxDepthPolicy(1); // Set max depth to 1
     import std.exception;
     // This should throw an exception because the depth exceeds 1
     assertThrown!JSONIopipeException(
@@ -752,7 +765,7 @@ unittest
     );
 
     // Now deserialize with a higher max depth
-    auto policy2 = DefaultDeserializationPolicy!false(2); // Set max depth to 2
+    auto policy2 = MaxDepthPolicy(2); // set max depth to 2
     auto t = deserialize!T(jsonStr, policy2);
     assert(t.name == "valid");
     assert(t.stuff.object["a"].type == JSONType.String);
@@ -1749,9 +1762,13 @@ void deserialize(T, JT, Policy)(
         auto sc = SerializeContext!Policy(policy);
         sc.deserializeImpl(tokenizer, item);
     }
+    else static if(is(Policy == MaxDepthPolicy)) {
+        auto sc = contextWithPolicies(policy, DefaultDeserializationPolicy!false());
+        sc.deserializeImpl(tokenizer, item);
+    }
     else
     {
-        auto sc = SerializeContext!(Policy, DefaultDeserializationPolicy!false)(policy);
+        auto sc = contextWithPolicies(policy, MaxDepthPolicy(), DefaultDeserializationPolicy!false());
         sc.deserializeImpl(tokenizer, item);
     }
 }
@@ -1770,7 +1787,7 @@ T deserialize(T, JT)(
     ref JT tokenizer,
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false();
+    auto policy = contextWithPolicies(MaxDepthPolicy(), DefaultDeserializationPolicy!false());
     return deserialize!T(tokenizer, policy);
 }
 
@@ -1779,7 +1796,7 @@ void deserialize(T, JT)(
     ref T item
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false();
+    auto policy = contextWithPolicies(MaxDepthPolicy(), DefaultDeserializationPolicy!false());
     deserialize(tokenizer, item, policy);
 }
 
