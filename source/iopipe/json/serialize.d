@@ -1623,7 +1623,6 @@ unittest
             return handled;
         }
 
-
         Unhandled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) {
             // let the next policy handle it
             return unhandled;
@@ -1997,13 +1996,211 @@ unittest
 
 /* SERIALIZATION */
 
+/**
+ * The default serialization policy. All hooks are named `serializeImpl` (and
+ * `serializeAllMembers`), and take the writer, the value to serialize, and the
+ * `SerializeContext` (by ref, last). Use the context to recurse.
+ */
 struct DefaultSerializationPolicy {
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (__traits(isStaticArray, T))
+    {
+        // need an lvalue
+        auto slice = val[];
+        sc.serializeImpl(w, slice);
+        return handled;
+    }
 
-}
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == enum))
+    {
+        // enums are special, serialize based on the name. Unless there's a UDA
+        // saying to serialize as the base type.
+        static if(hasUDA!(T, enumBaseType))
+        {
+            sc.serializeImpl(w, *cast(OriginalType!T*)&val);
+        }
+        else
+        {
+            auto enumName = val.to!string;
+            sc.serializeImpl(w, enumName);
+        }
+        return handled;
+    }
 
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (__traits(isStaticArray, T))
-{
-    policy.serializeImpl(w, val[]);
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+    {
+        w.beginArray();
+        foreach(ref item; val)
+        {
+            w.nextMember();
+            sc.serializeImpl(w, item);
+        }
+        w.endAggregate();
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == V[K], V, K) /* && isSomeString!K */)
+    {
+        // serialized as an object
+        w.beginObject();
+        foreach(k, ref v; val)
+        {
+            w.nextMember();
+            w.addMemberName(k);
+            w.addColon();
+
+            sc.serializeImpl(w, v);
+        }
+        w.endAggregate();
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (isSomeString!T && !is(T == enum))
+    {
+        w.beginString();
+        w.addStringData(val);
+        w.endString();
+        return handled;
+    }
+
+    Handled serializeAllMembers(Writer, T, SC)(ref Writer w, ref T val, ref SC sc)
+    {
+        // must be in an object
+        assert(w.inObj);
+
+        // serialize as an object
+        static foreach(n; SerializableMembers!T)
+        {
+            static if(hasUDA!(__traits(getMember, T, n), extras))
+            {
+                // this is the extras member, It should be an object, with all the information inside there.
+                foreach(k, ref v; __traits(getMember, val, n).object)
+                {
+                    w.nextMember();
+                    w.addMemberName(k);
+                    w.addColon();
+                    sc.serializeImpl(w, v);
+                }
+            }
+            else
+            {
+                w.nextMember();
+                static if(hasUDA!(__traits(getMember, T, n), alternateName))
+                    w.addMemberName(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
+                else
+                    w.addMemberName(n);
+                w.addColon();
+                sc.serializeImpl(w, __traits(getMember, val, n));
+            }
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == struct))
+    {
+        static if(isInstanceOf!(Nullable, T))
+        {
+            if(val.isNull)
+                w.addKeywordValue(KeywordValue.Null);
+            else
+                sc.serializeImpl(w, val.get);
+        }
+        else static if(isInstanceOf!(JSONValue, T))
+        {
+            with(JSONType) final switch(val.type)
+            {
+            case Integer:
+                sc.serializeImpl(w, val.integer);
+                break;
+            case Floating:
+                sc.serializeImpl(w, val.floating);
+                break;
+            case String:
+                sc.serializeImpl(w, val.str);
+                break;
+            case Array:
+                sc.serializeImpl(w, val.array);
+                break;
+            case Obj:
+                sc.serializeImpl(w, val.object);
+                break;
+            case Null:
+                typeof(null) n;
+                sc.serializeImpl(w, n);
+                break;
+            case Bool:
+                sc.serializeImpl(w, val.boolean);
+                break;
+            }
+        }
+        else static if(__traits(hasMember, T, "toJSON"))
+        {
+            val.toJSON(w, sc);
+        }
+        else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
+        {
+            alias representers = getSymbolsByUDA!(T, serializeAs);
+            // serialize as the single item
+            static assert(representers.length == 1, "Only one field can be used to represent an object");
+            sc.serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
+        }
+        else static if(isInputRange!T)
+        {
+            w.beginArray();
+            foreach(ref item; val)
+            {
+                w.nextMember();
+                sc.serializeImpl(w, item);
+            }
+            w.endAggregate();
+        }
+        else
+        {
+            w.beginObject();
+            sc.serializeAllMembers(w, val);
+            w.endAggregate();
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == class) || is(T == interface))
+    {
+        if(val is null)
+        {
+            w.addKeywordValue(KeywordValue.Null);
+            return handled;
+        }
+        // If the class defines a method toJSON, then use that. Otherwise, we will
+        // just serialize the data as we can.
+        static if(__traits(hasMember, T, "toJSON"))
+        {
+            val.toJSON(w, sc);
+        }
+        else
+        {
+            w.beginObject();
+            sc.serializeAllMembers(w, val);
+            w.endAggregate();
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == typeof(null)))
+    {
+        w.addKeywordValue(KeywordValue.Null);
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (!is(T == enum) && isNumeric!T)
+    {
+        w.addNumber(val);
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(Unqual!T == bool))
+    {
+        w.addKeywordValue(val ? KeywordValue.True : KeywordValue.False);
+        return handled;
+    }
 }
 
 unittest
@@ -2011,50 +2208,6 @@ unittest
     // ensure static array serialization works
     int[5] arr = [1,2,3,4,5];
     assert(serialize(arr) == "[1,2,3,4,5]");
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (is(T == enum))
-{
-    // enums are special, serialize based on the name. Unless there's a UDA
-    // saying to serialize as the base type.
-    static if(hasUDA!(T, enumBaseType))
-    {
-        policy.serializeImpl(w, *cast(OriginalType!T*)&val);
-    }
-    else
-    {
-        auto enumName = val.to!string;
-        policy.serializeImpl(w, enumName);
-    }
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{
-    // open brace
-    w.beginArray();
-    foreach(ref item; val)
-    {
-        w.nextMember();
-        policy.serializeImpl(w, item);
-    }
-    w.endAggregate();
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
-{
-    assert(is(T == V[K], V, K));
-
-    // serialized as an object
-    w.beginObject();
-    foreach(k, v; val)
-    {
-        w.nextMember();
-        w.addMemberName(k);
-        w.addColon();
-
-        policy.serializeImpl(w, v);
-    }
-    w.endAggregate();
 }
 
 unittest
@@ -2068,14 +2221,6 @@ unittest
     }
     serialized = serialize([X.a : 1, X.b: 2]);
     assert(serialized == `{"a":1,"b":2}` || serialized == `{"b":2,"a":1}`);
-}
-
-/// Instantiate the template without arguments so it's not necessary at the callsite anymore
-void serializeImpl(P, T, Writer)(ref P Policy, ref Writer w, T val) if (isSomeString!T)
-{
-    w.beginString();
-    w.addStringData(val);
-    w.endString();
 }
 
 // Escape special characters
@@ -2100,130 +2245,11 @@ unittest
     assert(raw.serialize.deserialize!string == raw);
 }
 
-void serializeAllMembers(P, T, Writer)(ref P policy, ref Writer w, auto ref T val)
-{
-    // must be in an object
-    assert(w.inObj);
-
-    // serialize as an object
-    static foreach(n; SerializableMembers!T)
-    {
-        static if(hasUDA!(__traits(getMember, T, n), extras))
-        {
-            // this is the extras member, It should be an object, with all the information inside there.
-            foreach(k, ref v; __traits(getMember, val, n).object)
-            {
-                w.nextMember();
-                w.addMemberName(k);
-                w.addColon();
-                policy.serializeImpl(w, v);
-            }
-        }
-        else
-        {
-            w.nextMember();
-            static if(hasUDA!(__traits(getMember, T, n), alternateName))
-                w.addMemberName(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
-            else
-                w.addMemberName(n);
-            w.addColon();
-            policy.serializeImpl(w, __traits(getMember, val, n));
-        }
-    }
-}
-
 ///compatibility shim
 void serializeAllMembers(T, Writer)(ref Writer w, auto ref T val)
 {
-    auto policy = DefaultSerializationPolicy;
-    serializeAllmembers(policy, w, val);
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (is(T == struct))
-{
-    static if(isInstanceOf!(Nullable, T))
-    {
-        if(val.isNull)
-            w.addKeywordValue(KeywordValue.Null);
-        else
-            policy.serializeImpl(w, val.get);
-    }
-    else static if(isInstanceOf!(JSONValue, T))
-    {
-        with(JSONType) final switch(val.type)
-        {
-        case Integer:
-            policy.serializeImpl(w, val.integer);
-            break;
-        case Floating:
-            policy.serializeImpl(w, val.floating);
-            break;
-        case String:
-            policy.serializeImpl(w, val.str);
-            break;
-        case Array:
-            policy.serializeImpl(w, val.array);
-            break;
-        case Obj:
-            policy.serializeImpl(w, val.object);
-            break;
-        case Null:
-            policy.serializeImpl(w, null);
-            break;
-        case Bool:
-            policy.serializeImpl(w, val.boolean);
-            break;
-        }
-    }
-    else static if(__traits(hasMember, T, "toJSON"))
-    {
-        val.toJSON(policy, w);
-    }
-    else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
-    {
-        alias representers = getSymbolsByUDA!(T, serializeAs);
-        // serialize as the single item
-        static assert(representers.length == 1, "Only one field can be used to represent an object");
-        policy.serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
-    }
-    else static if(isInputRange!T)
-    {
-        // open brace
-        w.beginArray();
-        foreach(ref item; val)
-        {
-            w.nextMember();
-            policy.serializeImpl(w, item);
-        }
-        w.endAggregate();
-    }
-    else
-    {
-        w.beginObject();
-        policy.serializeAllMembers(w, val);
-        w.endAggregate();
-    }
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (is(T == class) || is(T == interface))
-{
-    if(val is null)
-    {
-        w.addKeywordValue(KeywordValue.Null);
-        return;
-    }
-    // If the class defines a method toJSON, then use that. Otherwise, we will
-    // just serialize the data as we can.
-    static if(__traits(hasMember, T, "toJSON"))
-    {
-        val.toJSON(policy, w);
-    }
-    else
-    {
-        w.beginObject();
-        policy.serializeAllMembers(w, val);
-        w.endAggregate();
-    }
+    auto sc = contextWithPolicies(DefaultSerializationPolicy());
+    sc.serializeAllMembers(w, val);
 }
 
 // null class members
@@ -2240,12 +2266,6 @@ unittest
     assert(serialize(s) == `{"c":null}`);
 }
 
-
-void serializeImpl(P, Writer)(ref P policy, ref Writer w, typeof(null) val)
-{
-    w.addKeywordValue(KeywordValue.Null);
-}
-
 // allow serializing null
 unittest
 {
@@ -2254,16 +2274,6 @@ unittest
     }
     S s;
     assert(serialize(s) == `{"n":null}`);
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (!is(T == enum) && isNumeric!T)
-{
-    w.addNumber(val);
-}
-
-void serializeImpl(P, Writer)(ref P policy, ref Writer w, bool val)
-{
-    w.addKeywordValue(val ? KeywordValue.True : KeywordValue.False);
 }
 
 // serialize an item to an iopipe.
@@ -2292,7 +2302,7 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
     return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), DefaultSerializationPolicy());
 }
 
-size_t serialize(T, Chain, Policy)(auto ref T val, auto ref Chain chain, auto ref T val, auto ref Policy policy)
+size_t serialize(T, Chain, Policy)(auto ref T val, auto ref Chain chain, auto ref Policy policy)
 if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
     return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), policy);
@@ -2307,8 +2317,23 @@ if (isJSONWriter!Writer)
 size_t serialize(T, Writer, Policy)(auto ref T val, auto ref Writer writer, auto ref Policy policy)
 if (isJSONWriter!Writer)
 {
-    // serialize the item, recursively
-    policy.serializeImpl(writer, val);
+    // Build the context for the given policy. If the policy is already a
+    // context, it is used as-is. Otherwise, the policy is placed first in a
+    // new context, with the default policy as the fallback.
+    static if(isSerializeContext!Policy)
+    {
+        policy.serializeImpl(writer, val);
+    }
+    else static if(is(Policy == DefaultSerializationPolicy))
+    {
+        auto sc = SerializeContext!Policy(policy);
+        sc.serializeImpl(writer, val);
+    }
+    else
+    {
+        auto sc = contextWithPolicies(policy, DefaultSerializationPolicy());
+        sc.serializeImpl(writer, val);
+    }
 
     return writer.totalWritten;
 }
@@ -2403,20 +2428,21 @@ unittest
     static class D : C
     {
         string s;
-        void toJSON(Writer)(DefaultSerializationPolicy policy, ref Writer w)
+        void toJSON(Writer)(ref Writer w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             // serialize using a wrapped json object
             static if(is(Writer : JSONWriterInterface!false))
-                return toJSONImpl(policy, w);
+                return toJSONImpl(w, sc);
             // wrap the json object to get everything virtual
             static assert(!w.hasJSON5, "doesn't support json5!");
             scope tmpFormatter = new JSONWriterObject!Writer(w);
-            toJSONImpl(policy, tmpFormatter);
+            toJSONImpl(tmpFormatter, sc);
         }
-        protected void toJSONImpl(DefaultSerializationPolicy policy, JSONWriterInterface!false w)
+        protected void toJSONImpl(JSONWriterInterface!false w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             w.beginObject();
-            policy.serializeAllMembers(w, this);
+            auto self = this;
+            sc.serializeAllMembers(w, self);
             w.endAggregate();
         }
     }
@@ -2424,10 +2450,11 @@ unittest
     static class E : D
     {
         double d;
-        override void toJSONImpl(DefaultSerializationPolicy policy, JSONWriterInterface!false w)
+        override void toJSONImpl(JSONWriterInterface!false w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             w.beginObject();
-            policy.serializeAllMembers(w, this);
+            auto self = this;
+            sc.serializeAllMembers(w, self);
             w.endAggregate();
         }
     }
@@ -2462,14 +2489,15 @@ unittest
 
     static struct SerializeFooAsString
     {
-        void serializeImpl(T, Writer)(ref Writer w, ref T val) {
-            static if(is(T == Foo)) {
-                w.beginString();
-                w.addStringData(val.x.to!string);
-                w.endString();
-            }
-            else
-                .serializeImpl(this, w, val);
+        Handled serializeImpl(Writer, T : Foo, SC)(ref Writer w, ref T val, ref SC sc) {
+            w.beginString();
+            w.addStringData(val.x.to!string);
+            w.endString();
+            return handled;
+        }
+
+        Unhandled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) {
+            return unhandled;
         }
     }
 

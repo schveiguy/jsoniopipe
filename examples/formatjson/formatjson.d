@@ -38,7 +38,7 @@ void main(string[] args)
             fmt.endAggregate();
             break;
         case Comma:
-            fmt.addComma();
+            fmt.nextMember();
             break;
         case Colon:
             fmt.addColon();
