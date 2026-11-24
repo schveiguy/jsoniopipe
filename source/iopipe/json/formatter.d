@@ -1409,6 +1409,7 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
 
 unittest
 {
+    import std.range : repeat;
     // All hidden templated overloads must stay reachable through a JSONWriterObject
     // reference (same issue as #99): addNumber, addStringData, addMemberName,
     // addWhitespace, and addComment (+ addMemberName's style overload) on JSON5.
@@ -1424,7 +1425,7 @@ unittest
         w.beginString();
         w.addStringData(42);    // template: int content -> "42"            (#99)
         w.endString();
-        w.addWhitespace(42);    // template: int -> to!string, written as-is
+        w.addWhitespace(' '.repeat(10)); // template: range -> to!string -> 10 spaces
         w.endAggregate();
     }
 
@@ -1432,7 +1433,7 @@ unittest
     auto writer = chain.jsonWriter!(false, ReleaseOnWrite.no);
     auto wrapped = new JSONWriterObject!(typeof(writer))(writer);
     fill(wrapped);
-    assert(wrapped.window == `{"123":3,"s":"42"42}`, wrapped.window);
+    assert(wrapped.window == `{"123":3,"s":"42"          }`, wrapped.window);
 
     auto chain2 = bufd!char();
     auto writer2 = chain2.jsonWriter!(false, ReleaseOnWrite.no);
@@ -1442,27 +1443,28 @@ unittest
            "concrete wrapper and interface must produce identical output");
 
     // JSON5: addComment and addMemberName(..., MemberNameStyle) hide the same way
+    static void fill5(W)(W w)
+    {
+        w.beginObject();
+        w.addMemberName(123, MemberNameStyle.Auto);
+        w.addColon();
+        w.addNumber(1);
+        w.addComment("/*");
+        w.addComment(42);   // JSON5-only template: int -> to!string -> comment
+        w.addComment("*/");
+        w.endAggregate();
+    }
+
     auto chain5 = bufd!char();
     auto writer5 = chain5.jsonWriter!(true, ReleaseOnWrite.no);
     auto wrapped5 = new JSONWriterObject!(typeof(writer5))(writer5);
-
-    wrapped5.beginObject();
-    wrapped5.addMemberName(123, MemberNameStyle.Auto);
-    wrapped5.addColon();
-    wrapped5.addNumber(1);
-    wrapped5.addComment(42);   // JSON5-only template: int -> to!string -> comment
-    wrapped5.endAggregate();
+    fill5(wrapped5);
+    assert(wrapped5.window == `{"123":1/*42*/}`, wrapped5.window);
 
     auto chain6 = bufd!char();
     auto writer6 = chain6.jsonWriter!(true, ReleaseOnWrite.no);
     JSONWriterInterface!true wrapped6 = new JSONWriterObject!(typeof(writer6))(writer6);
-
-    wrapped6.beginObject();
-    wrapped6.addMemberName(123, MemberNameStyle.Auto);
-    wrapped6.addColon();
-    wrapped6.addNumber(1);
-    wrapped6.addComment(42);
-    wrapped6.endAggregate();
+    fill5(wrapped6);
     assert(wrapped6.window == wrapped5.window,
            "JSON5: concrete wrapper and interface must produce identical output");
 }
