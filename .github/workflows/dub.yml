@@ -17,6 +17,10 @@ jobs:
         compiler:
           - dmd-latest
           - ldc-latest
+        exclude:
+          # DMD not properly building on ARM hardware
+          - compiler: dmd-latest
+            os: macos-latest
     steps:
       - uses: actions/checkout@v3
       
