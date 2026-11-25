@@ -1379,6 +1379,7 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
     void endAggregate() => fmt.endAggregate();
     void beginString() => fmt.beginString();
     static if(hasJSON5) void beginString(char quoteChar) => fmt.beginString;
+    alias addMemberName = JSONWriterInterface!(RealWriter.hasJSON5).addMemberName;
     void addMemberName(const(char)[] memberName) => fmt.addMemberName(memberName);
     static if(hasJSON5)
     {
@@ -1394,10 +1395,12 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
     void addColon() => fmt.addColon();
 
     void nextMember() => fmt.nextMember();
+    alias addWhitespace = JSONWriterInterface!(RealWriter.hasJSON5).addWhitespace;
     void addWhitespace(string data) => fmt.addWhitespace(data);
 
     static if(hasJSON5)
     {
+        alias addComment = JSONWriterInterface!(RealWriter.hasJSON5).addComment;
         void addComment(string commentData) => fmt.addComment(commentData);
     }
 
@@ -1406,23 +1409,62 @@ final class JSONWriterObject(RealWriter) : JSONWriterInterface!(RealWriter.hasJS
 
 unittest
 {
-    // templated overloads inherited from JSONWriterInterface must remain
-    // reachable through a JSONWriterObject reference
+    import std.range : repeat;
+    // All hidden templated overloads must stay reachable through a JSONWriterObject
+    // reference (same issue as #99): addNumber, addStringData, addMemberName,
+    // addWhitespace, and addComment (+ addMemberName's style overload) on JSON5.
+    static void fill(W)(W w)
+    {
+        w.beginObject();
+        w.addMemberName(123);   // template: int member name -> "123"
+        w.addColon();
+        w.addNumber(3);         // template: int content                    (#99)
+        w.nextMember();
+        w.addMemberName("s");
+        w.addColon();
+        w.beginString();
+        w.addStringData(42);    // template: int content -> "42"            (#99)
+        w.endString();
+        w.addWhitespace(' '.repeat(10)); // template: range -> to!string -> 10 spaces
+        w.endAggregate();
+    }
+
     auto chain = bufd!char();
     auto writer = chain.jsonWriter!(false, ReleaseOnWrite.no);
     auto wrapped = new JSONWriterObject!(typeof(writer))(writer);
+    fill(wrapped);
+    assert(wrapped.window == `{"123":3,"s":"42"          }`, wrapped.window);
 
-    wrapped.beginObject();
-    wrapped.addMemberName("n");
-    wrapped.addColon();
-    wrapped.addNumber(3);       // int content via the interface template
-    wrapped.nextMember();
-    wrapped.addMemberName("s");
-    wrapped.addColon();
-    wrapped.beginString();
-    wrapped.addStringData(42);  // non-string content, same hiding issue
-    wrapped.endString();
-    wrapped.endAggregate();
+    auto chain2 = bufd!char();
+    auto writer2 = chain2.jsonWriter!(false, ReleaseOnWrite.no);
+    JSONWriterInterface!false wrapped2 = new JSONWriterObject!(typeof(writer2))(writer2);
+    fill(wrapped2);
+    assert(wrapped2.window == wrapped.window,
+           "concrete wrapper and interface must produce identical output");
 
-    assert(wrapped.window == `{"n":3,"s":"42"}`, wrapped.window);
+    // JSON5: addComment and addMemberName(..., MemberNameStyle) hide the same way
+    static void fill5(W)(W w)
+    {
+        w.beginObject();
+        w.addMemberName(123, MemberNameStyle.Auto);
+        w.addColon();
+        w.addNumber(1);
+        w.addComment("/*");
+        w.addComment(42);   // JSON5-only template: int -> to!string -> comment
+        w.addComment("*/");
+        w.endAggregate();
+    }
+
+    auto chain5 = bufd!char();
+    auto writer5 = chain5.jsonWriter!(true, ReleaseOnWrite.no);
+    auto wrapped5 = new JSONWriterObject!(typeof(writer5))(writer5);
+    fill5(wrapped5);
+    assert(wrapped5.window == `{"123":1/*42*/}`, wrapped5.window);
+
+    auto chain6 = bufd!char();
+    auto writer6 = chain6.jsonWriter!(true, ReleaseOnWrite.no);
+    JSONWriterInterface!true wrapped6 = new JSONWriterObject!(typeof(writer6))(writer6);
+    fill5(wrapped6);
+    assert(wrapped6.window == wrapped5.window,
+           "JSON5: concrete wrapper and interface must produce identical output");
 }
