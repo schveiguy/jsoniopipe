@@ -1,21 +1,46 @@
 /**
  * Serialize and deserialize arbitrary objects to/ from json
  *
- * Both $(LREF serialize) and $(LREF deserialize) support 3 levels of detail.
- * If the template argument is just a type, they try to serialize it as
- * faithfully as possible.
- * For structs and classes, this means treating the fieldnames as keys in
- * a JSON object.
- * The type JSONValue can be used if dynamic objects are needed.
+ * Both $(LREF serialize) and $(LREF deserialize) convert to and from D types and json data.
  *
- * For more controls, the various UDAs defined here can be used on compound
- * types or their fields to customize the behaviour of this module in a
- * limited way.
+ * Basic types are translated as follows:
+ * - JSON numeric types: [u]byte, [u]short, [u]int, [u]long, float, double, real
+ * - JSON string types: string, wstring, dstring, enums (enumerated integers)
+ * - JSON object types: V[string]
+ * - JSON boolean: bool
+ * - JSON null: Nullable!T
  *
- * If that is not enough, structs/ classes can define toJSON or a static
- * fromJSON method and take full control over how they are serialized.
- * For toJSON, $(LREF serializeAllMembers) might be useful. fromJSON will
- * have to use $(LREF iopipe,json,parser).
+ * If the template argument is a struct or class, the default behavior is to
+ * serialize the item as a JSON object with field names as the object keys, and
+ * the values mapped recursively.
+ *
+ * If the template argument is an array (aside from string types), the array is
+ * serialized as a JSON array, with each item recursively serialized.
+ *
+ * For customization, you can use one of 3 mechanisms:
+ * 1. UDAs. Adding UDAs to fields can affect the behavior of serialization.
+ * 2. Custom serialization/deserialization methods on a type.
+ * 3. Policies. Serialization and Deserialization always use policies to do all work. These can be hooked by passing in custom policies. Policies can be chained in order of importance.
+ *
+ * ## How to implement a policy:
+ *
+ * How a policy processes calls to serialize/deserialize
+ * 1. If you do not wish to handle a specific hook, do not define a member with that name.
+ * 2. If you wish to handle calls, define the hook:
+ *   a. Every call to your policy must compile, no matter the argument types.
+ *      Failure to compile is a compilation error. This prevents issues such as
+ *      simple typos causing compilation to succeed but misbehave at runtime.
+ *      An exception is if you return Handled, then lower priority policy calls
+ *      will not be tried.
+ *   b. If you return Unhandled from a call, it will not be called.
+ *   c. If you return Handled from a call, no further calls will be compiled.
+ *   d. Any other call must return a truthy value (something that can be
+ *      evaluated inside `if`)
+ * 3. Any call must accept the `SerializeContext` instance by ref as the last
+ *    parameter. You MUST use this to recurse for object and array data (or
+ *    transforming behavior).
+ * 4. If you return a false value, then the next policy is tried. You must NOT
+ *    have advanced the input stream.
  */
 module iopipe.json.serialize;
 import iopipe.json.parser;
@@ -32,57 +57,661 @@ import std.typecons : Nullable;
 import std.conv;
 import std.format;
 
+/// Return this to signal the hook does not handle this call. Your function will not be called
+struct Unhandled {}
+
+/// ditto
+enum unhandled = Unhandled();
+
+/// Return this to signal the hook ALWAYS handles this call. Further functions will not be called
+struct Handled {
+    // functions that return Handled short circuit the composition.
+    bool opCast(T: bool)() => true;
+}
+
+/// ditto
+enum handled = Handled();
+
+enum isSerializeContext(T) = is(T == SerializeContext!(Args), Args...);
+
+// BIG NOTE: do not try and remove the nesting of opDispatch. This allows the
+// compiler to flag errors in user code that will be swallowed by the implicit
+// __traits(compiles) that the compiler uses on opDispatch instantiations.
+// Because the template instantiates, it is used.
+struct SerializeContext(Policies...) {
+    private Policies policies;
+
+    template opDispatch(string fn) {
+        void opDispatch(Args...)(ref Args args) {
+            pragma(inline, true);
+
+            // validate at least one policy implements this function
+            enum hasHandler(P) = __traits(hasMember, P, fn) && !is(typeof(__traits(getMember, P.init, fn)(args, this)) == Unhandled);
+
+            // cut off handlers after a policy which returns Handled
+            enum handlersLength = () {
+                size_t length = 0;
+                foreach(idx, P; Policies) {
+                    static if(hasHandler!P)
+                    {
+                        length = idx + 1;
+                        static if(is(typeof(__traits(getMember, P.init, fn)(args, this)) == Handled))
+                            break;
+                    }
+                }
+                return length;
+            }();
+
+            static assert(handlersLength > 0, "No handlers for function " ~ fn);
+
+            foreach(ref p; policies[0 .. handlersLength]) {
+                // if the function exists, call it
+                static if(hasHandler!(typeof(p))) {
+                    if(__traits(getMember, p, fn)(args, this))
+                        return;
+                }
+            }
+            assert(false, "Method " ~ fn ~ " with parameters " ~ Args.stringof ~ " was not handled by any policy!");
+        }
+    }
+}
+
+auto contextWithPolicies(Policies...)(Policies policies) {
+    return SerializeContext!Policies(policies);
+}
+
+struct MaxDepthPolicy {
+    int maxDepthAvailable = 64;
+    this(int maxDepthAvailable) {
+        this.maxDepthAvailable = maxDepthAvailable;
+    }
+
+    bool onObjectBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return false;
+    }
+
+    bool onArrayBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        if (--maxDepthAvailable < 0) {
+            throw new JSONIopipeException("Maximum parse depth exceeded");
+        }
+        return false;
+    }
+
+    bool onObjectEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        ++maxDepthAvailable;
+        return false;
+    }
+
+    bool onArrayEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, size_t length, ref C context, ref SC sc) {
+        ++maxDepthAvailable;
+        return false;
+    }
+}
+
 struct DefaultDeserializationPolicy(bool caseInsensitive = false) {
     ReleasePolicy relPol = ReleasePolicy.afterMembers; // default policy
-    int maxDepthAvailable = 64;
 
     this(ReleasePolicy relPol) {
         this.relPol = relPol;
     }
 
-    this(int maxDepthAvailable) {
-        this.maxDepthAvailable = maxDepthAvailable;
-    }
-
-    this(ReleasePolicy relPol, int maxDepthAvailable) {
-        this.relPol = relPol;
-        this.maxDepthAvailable = maxDepthAvailable;
-    }
-
-    auto onArrayBegin(JT, T)(ref JT tokenizer, ref T item) {
-        if (--maxDepthAvailable < 0) {
-            throw new JSONIopipeException("Maximum parse depth exceeded");
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == enum))
+    {
+        // enums are special, we can serialize them based on the enum name, or the
+        // base type.
+        static if(hasUDA!(T, enumBaseType))
+        {
+            sc.deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item));
         }
-        return .onArrayBegin(this, tokenizer, item);
-    }
-
-    auto onObjectBegin(JT, T)(ref JT tokenizer, ref T item) {
-        if (--maxDepthAvailable < 0) {
-            throw new JSONIopipeException("Maximum parse depth exceeded");
+        else
+        {
+            // convert to the enum via the string name
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
+            item = jsonItem.data.to!T;
         }
-        return .onObjectBegin(this, tokenizer, item);
+        return handled;
     }
 
-    void onField(JT, T, Element, C)(
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == V[K], V, K))
+    {
+        // Keys currently must be some string type. Future versions may allow
+        // conversion from character data.
+        sc.deserializeObject(tokenizer, item);
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (!is(T == enum) && isNumeric!T)
+    {
+        auto jsonItem = tokenizer.nextSignificant
+            .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
+
+        auto str = jsonItem.data;
+        static if(isIntegral!T)
+        {
+            if(jsonItem.hint != JSONParseHint.Int &&
+                    !(tokenizer.config.JSON5 && jsonItem.hint == JSONParseHint.Hex))
+            {
+                throw new JSONIopipeException(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data));
+            }
+        }
+        else
+        {
+            static if(tokenizer.config.JSON5)
+            {
+                // if it's +/- infinity, phobos doesn't parse this properly.
+                if(jsonItem.hint == JSONParseHint.Infinity)
+                {
+                    auto window = jsonItem.data;
+                    if(window[0] == '-')
+                        item = -T.infinity;
+                    else
+                        item = T.infinity;
+                    return handled;
+                }
+            }
+        }
+
+        // get the string from the buffer that contains the number
+        auto window = jsonItem.data;
+        static if(isIntegral!T && tokenizer.config.JSON5)
+        {
+            if(jsonItem.hint == JSONParseHint.Hex)
+            {
+                // have to do this somewhat manually, as there is no function to
+                // properly parse the "0x" in phobos
+                int sign = 1;
+                switch(window[0])
+                {
+                    case '0':
+                        window = window[2 .. $];
+                        break;
+                    case '-':
+                        sign = -1;
+                        window = window[3 .. $];
+                        break;
+                    case '+':
+                        window = window[3 .. $];
+                        break;
+                    default:
+                        assert(false, "invalid hex number detected! " ~ window);
+                }
+                item = window.parse!T(16) * sign;
+            }
+            else
+                item = window.parse!T;
+        }
+        else
+            item = window.parse!T;
+        if(!window.empty)
+        {
+            throw new JSONIopipeException(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data, window));
+        }
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == bool))
+    {
+        auto jsonItem = tokenizer.nextSignificant;
+        if(jsonItem.token == JSONToken.True)
+        {
+            item = true;
+        }
+        else if(jsonItem.token == JSONToken.False)
+        {
+            item = false;
+        }
+        else
+        {
+            throw new JSONIopipeException(format("Parsing bool: expected %s or %s , but got %s", JSONToken.True, JSONToken.False, jsonItem.token));
+        }
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (isSomeString!T)
+    {
+        // Use phobos `to`, we want to duplicate the string if necessary.
+        auto jsonItem = tokenizer.nextSignificant
+            .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
+
+        // this should not fail unless the data is non-unicode
+        item = extractString!T(jsonItem);
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (isInstanceOf!(JSONValue, T))
+    {
+        auto token = tokenizer.peekSignificant();
+        with(JSONToken) switch (token)
+        {
+            case ObjectStart:
+                item.type = JSONType.Obj;
+                item.object = null;
+                sc.deserializeImpl(tokenizer, item.object);
+                break;
+            case ArrayStart:
+                item.type = JSONType.Array;
+                item.array = null;
+                sc.deserializeImpl(tokenizer, item.array);
+                break;
+            case String:
+            case Symbol:
+                item.type = JSONType.String;
+                sc.deserializeImpl(tokenizer, item.str);
+                break;
+            case Number:
+                auto jsonItem = tokenizer.next;
+                tokenizer.jumpBack(1);
+                if(jsonItem.hint == JSONParseHint.Int) {
+                    item.type = JSONType.Integer;
+                    sc.deserializeImpl(tokenizer, item.integer);
+                } else {
+                    item.type = JSONType.Floating;
+                    sc.deserializeImpl(tokenizer, item.floating);
+                }
+                break;
+            case True:
+            case False:
+                item.type = JSONType.Bool;
+                sc.deserializeImpl(tokenizer, item.boolean);
+                break;
+            case Null:
+                item.type = JSONType.Null;
+                // consume the null, validating it.
+                cast(void)tokenizer.nextSignificant().jsonExpect(JSONToken.Null, "Parsing Null");
+                break;
+            default:
+                throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
+        }
+        return handled;
+    }
+
+    // if type is Nullable, first check for JSONToken.Null, and if not, try and
+    // parse real item.
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (isInstanceOf!(Nullable, T))
+    {
+        if(tokenizer.peekSignificant == JSONToken.Null)
+        {
+            item.nullify;
+            // skip the null value
+            cast(void)tokenizer.nextSignificant;
+        }
+        else
+        {
+            typeof(item.get()) result;
+            sc.deserializeImpl(tokenizer, result);
+            item = result;
+        }
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
+    {
+        static if(__traits(compiles, T.fromJSON(tokenizer, sc))) {
+            // use the context object
+            static assert(checkRef!(T.fromJSON, JT, SC),
+                "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+            item = T.fromJSON(tokenizer, sc);
+        } else static if(is(Parameters!(T.fromJSON!JT)[1] == ReleasePolicy)) {
+            // use ReleasePolicy
+            static assert(isJTRef!(T.fromJSON!JT),
+                "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+            item = T.fromJSON(tokenizer, relPol);
+        } else static if(__traits(compiles, T.fromJSON(tokenizer))) {
+            // use one parameter only
+            static assert(isJTRef!(T.fromJSON!JT),
+                "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
+            item = T.fromJSON(tokenizer);
+        } else {
+            // This will fail to compile. Try to nudge the user to use the context
+            pragma(msg, "Hint: fromJSON also doesn't compile with parameters (JSONTokenizer, ReleasePolicy) or  or just with (JSONTokenizer)");
+            item = T.fromJSON(tokenizer, sc);
+        }
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
+    {
+        alias representers = getSymbolsByUDA!(T, serializeAs);
+        static if(representers.length > 0)
+        {
+            static assert(representers.length == 1, "Only one field can be used to represent an object");
+            sc.deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
+        }
+        else
+        {
+            sc.deserializeObject(tokenizer, item);
+        }
+        return handled;
+    }
+
+    // deserialize a class or interface. The type must either provide a static
+    // function that returns the deserialized type, or have a zero-arg constructor.
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (is(T == class) || is(T == interface))
+    {
+        static if(__traits(hasMember, T, "fromJSON"))
+        {
+            static if(__traits(compiles, T.fromJSON(tokenizer, sc)))
+                item = T.fromJSON(tokenizer, sc);
+            else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init)))
+                item = T.fromJSON(tokenizer, relPol);
+            else
+                // This will fail to compile. Try to nudge the user to use the context
+                item = T.fromJSON(tokenizer, sc);
+        }
+        else static if(is(T == class))
+        {
+            // peek for a null token.
+            if(tokenizer.peekSignificant == JSONToken.Null)
+            {
+                item = null;
+                cast(void)tokenizer.nextSignificant;
+            }
+            else
+            {
+                auto t = new T();
+                sc.deserializeObject(tokenizer, t);
+                item = t;
+            }
+        }
+        else static assert(false, "Cannot deserialize interface " ~ T.stringof ~ " without a static `fromJson` member");
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (__traits(isStaticArray, T))
+    {
+        sc.deserializeArray(tokenizer, item);
+        return handled;
+    }
+
+    Handled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+    {
+        import std.array : Appender;
+        // Deserialize into an appender
+        auto app = Appender!T();
+
+        sc.deserializeArray(tokenizer, app);
+
+        // store the appender data into the actual item
+        item = app[];
+        return handled;
+    }
+
+    Handled deserializeObject(T, JT, SC)(
+            ref JT tokenizer,
+            ref T item,
+            ref SC sc
+            )
+    {
+        // Begin deserialization
+        tokenizer.nextSignificant
+            .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
+        static if(is(T == V[K], V, K)) {
+            ubyte context;
+        }
+        else {
+            bool[SerializableMembers!T.length] context;
+        }
+        sc.onObjectBegin(tokenizer, item, context);
+
+        // Process fields
+        while(tokenizer.peekSkipComma() != JSONToken.ObjectEnd)
+        {
+            // Key validation is already done in the parser.
+            auto key = tokenizer.nextSignificant
+                .jsonExpectValid("Expecting comma and/or member name of " ~ T.stringof);
+
+            // colon
+            tokenizer.nextSignificant()
+                .jsonExpectValid("Expecting colon when parsing " ~ T.stringof);
+
+            sc.onField(tokenizer, item, key, context);
+        }
+
+        // expect the object end
+        tokenizer.nextSignificant()
+            .jsonExpectValid("Expecting object end while parsing " ~ T.stringof);
+
+        // End deserialization
+        sc.onObjectEnd(tokenizer, item, context);
+        return handled;
+    }
+
+    Handled onObjectBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        static if(is(T == V[K], V, K)) {
+            // no context for AAs.
+        }
+        else {
+            static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
+            alias members = SerializableMembers!T;
+            // Pre-mark optional fields as visited
+            static foreach(idx, m; members) {
+                static if(hasUDA!(__traits(getMember, T, m), optional)) {
+                    context[idx] = true;
+                }
+                static if(hasUDA!(__traits(getMember, T, m), extras))
+                {
+                    // this is the extras member, it holds any extra data that was not
+                    // specified as a member.
+                    static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                    // initialize it for use
+                    __traits(getMember, item, m).type = JSONType.Obj;
+                    __traits(getMember, item, m).object = null;
+                    // extras is always optional.
+                    context[idx] = true;
+                }
+            }
+        }
+        return handled;
+    }
+
+    Handled deserializeArray(T, JT, SC)(
         ref JT tokenizer,
         ref T item,
-        Element key,
-        ref C context
-    ) {
-        .onField!caseInsensitive(this, tokenizer, item, key, context);
-        if(relPol == ReleasePolicy.afterMembers) {
-            tokenizer.flushCache();
+        ref SC sc
+    )
+    {
+        tokenizer.nextSignificant
+            .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
+        ubyte context;
+        sc.onArrayBegin(tokenizer, item, context);
+
+        // Parse array elements
+        size_t elementCount = 0;
+        while(tokenizer.peekSkipComma() != JSONToken.ArrayEnd) {
+            sc.onArrayElement(tokenizer, item, elementCount, context);
+            elementCount++;
         }
+
+        // verify we got an end array element
+        tokenizer.nextSignificant
+            .jsonExpectValid("Expecting array end while parsing " ~ T.stringof);
+
+        sc.onArrayEnd(tokenizer, item, elementCount, context);
+        return handled;
     }
 
-    void onObjectEnd(JT, T, C)(ref JT tokenizer, ref T item, ref C context) {
-        .onObjectEnd(this, tokenizer, item, context);
-        ++maxDepthAvailable;
+    Handled onArrayBegin(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        return handled;
     }
 
-    void onArrayEnd(JT, T, C)(ref JT tokenizer, ref T item, size_t length, ref C context) {
-        .onArrayEnd(this, tokenizer, item, length, context);
-        ++maxDepthAvailable;
+    Handled onField(JT, T, Element, C, SC)(
+        ref JT tokenizer,
+        ref T item,
+        ref Element key,
+        ref C context,
+        ref SC sc
+    ) {
+        scope(success) {
+            if(relPol == ReleasePolicy.afterMembers) {
+                tokenizer.flushCache();
+            }
+        }
+        static if(is(T == V[K], V, K)) {
+            // convert key into K, forcing a copy. We must copy because this key needs to exist forever.
+            auto k = extractString!(K, true)(key);
+            // extract value
+            V v;
+            sc.deserializeImpl(tokenizer, v);
+            // store in the AA.
+            item[k] = v;
+        }
+        else {
+            static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
+            alias members = SerializableMembers!T;
+            alias ignoredMembers = AllIgnoredMembers!T;
+
+            static foreach(idx, m; members)
+            {
+                static if(hasUDA!(__traits(getMember, T, m), extras))
+                {
+                    // this is the extras member, it holds any extra data that was not
+                    // specified as a member.
+                    static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
+                    enum extrasMember = m;
+                }
+            }
+
+            // Check each member to see if it matches
+            switch(key.data)
+            {
+                static foreach(i, memberName; members) {
+                    { // Add a block scope to contain each declaration, avoiding duplicate jsonName
+                      // declarations in the foreach loop.
+                        static if(!hasUDA!(__traits(getMember, T, memberName), extras)) {
+                            static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                                enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                            }
+                            else {
+                                enum jsonName = memberName;
+                            }
+
+                            case jsonName:
+                            // Choose appropriate deserialization method based on member type
+                            sc.deserializeImpl(tokenizer, __traits(getMember, item, memberName));
+                            context[i] = true; // Mark as visited
+                            return handled;  // ← IMPORTANT: Returns immediately!
+                        }
+                    }
+                }
+
+                enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
+
+
+                static if(ignoredMembers.length > 0)
+                {
+                    static foreach(m; ignoredMembers)
+                    {
+                        static foreach(s; m.ignoredMembers)
+                        {
+                            case s:
+                        }
+                    }
+                    // ignored members are ignored if they show up
+                    tokenizer.skipItem();
+                    break;
+                }
+
+                default:
+                static if(caseInsensitive)
+                {
+                    // Case-insensitive comparison
+                    import std.string : icmp;
+                    auto keyStr = key.data;
+                    static foreach(i, memberName; members) {
+                        {
+                            static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
+                                enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
+                            }
+                            else {
+                                enum jsonName = memberName;
+                            }
+                            if (icmp(keyStr, jsonName) == 0) {
+                                goto case jsonName;
+                            }
+                        }
+                    }
+                }
+                static if(ignoreExtras)
+                {
+                    tokenizer.skipItem();
+                    return handled; // Ignore unknown fields
+                }
+
+                static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
+                {
+                    // recurse with the JSONValue as the object. Note the change in
+                    // context, as the AA field deserializer takes a ubyte.
+                    ubyte _fakeContext;
+                    sc.onField(tokenizer, __traits(getMember, item, extrasMember).object, key, _fakeContext);
+                } else {
+                    // If we get here, it's truly an unknown field
+                    throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data, T.stringof));
+                }
+            }
+        }
+        return handled;
+    }
+
+    Handled onArrayElement(JT, T, C, SC)(ref JT tokenizer, ref T item, ref size_t idx, ref C context, ref SC sc)
+    {
+        static if(__traits(isStaticArray, T))
+        {
+            // Check bounds explicitly
+            if (idx >= T.length) {
+                throw new JSONIopipeException(format("Array index %s out of bounds for static array of length %s", idx, T.length));
+            }
+
+            // Deserialize the item at the given index
+            sc.deserializeImpl(tokenizer, item[idx]);
+        }
+        else // output range? support appender only for now
+        {
+            typeof(item[][0]) newElem;
+            // Deserialize the item at the given index
+            sc.deserializeImpl(tokenizer, newElem);
+
+            // append to the output range
+            item.put(newElem);
+        }
+        return handled;
+    }
+
+    Handled onObjectEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, ref C context, ref SC sc) {
+        static if(is(T == V[K], V, K)) {
+        }
+        else {
+            static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
+            alias members = SerializableMembers!T;
+            // ensure all members visited
+            static if(members.length)
+            {
+                import std.algorithm : canFind, map, filter;
+                if(context[].canFind(false))
+                {
+                    // this is a bit ugly, but gives a nicer message.
+                    static immutable marr = [members];
+                    import std.range : enumerate;
+                    throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, context[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
+                }
+            }
+        }
+        return handled;
+    }
+
+    Handled onArrayEnd(JT, T, C, SC)(ref JT tokenizer, ref T item, ref size_t length, ref C context, ref SC sc)
+    {
+        static if(__traits(isStaticArray, T))
+        {
+            if(T.length != length) // didn't serialize all elements
+            {
+                throw new JSONIopipeException(format("Expected array of length %s for type `%s`, but only got length %s", T.length, T.stringof, length));
+            }
+        }
+        return handled;
     }
 }
 
@@ -128,7 +757,7 @@ unittest
         }
       }`;
 
-    auto policy1 = DefaultDeserializationPolicy!false(1); // Set max depth to 1
+    auto policy1 = MaxDepthPolicy(1); // Set max depth to 1
     import std.exception;
     // This should throw an exception because the depth exceeds 1
     assertThrown!JSONIopipeException(
@@ -136,7 +765,7 @@ unittest
     );
 
     // Now deserialize with a higher max depth
-    auto policy2 = DefaultDeserializationPolicy!false(2); // Set max depth to 2
+    auto policy2 = MaxDepthPolicy(2); // set max depth to 2
     auto t = deserialize!T(jsonStr, policy2);
     assert(t.name == "valid");
     assert(t.stuff.object["a"].type == JSONType.String);
@@ -162,18 +791,20 @@ unittest
     // Test adding handling for a `char` type
     static struct CharSerializationPolicy
     {
-        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item)
+        Handled deserializeImpl(JT, T : char, SC)(ref JT tokenizer, ref T item, ref SC sc)
         {
-            static if(is(T == char)) {
-                auto jsonItem = tokenizer.nextSignificant
-                    .jsonExpect(JSONToken.String, "Parsing char");
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing char");
 
-                auto str = extractString!string(jsonItem);
-                if(str.length != 1)
-                    throw new JSONIopipeException("Parsed string does not fit in char");
-                item = str[0];
-            }
-            else return .deserializeImpl(this, tokenizer, item);
+            auto str = extractString!string(jsonItem);
+            if(str.length != 1)
+                throw new JSONIopipeException("Parsed string does not fit in char");
+            item = str[0];
+            return handled; // always handle char
+        }
+
+        Unhandled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) {
+            return unhandled; // we don't handle other types.
         }
     }
 
@@ -199,203 +830,6 @@ unittest
     catch(JSONIopipeException ex) {}
 }
 
-// shim for policies that do not specify a release policy
-private ReleasePolicy relPol(P)(ref P policy) => ReleasePolicy.afterMembers;
-
-auto onObjectBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item) {
-    static if(is(T == V[K], V, K)) {
-        return ubyte.init; // no context for AAs.
-    }
-    else {
-        alias members = SerializableMembers!T;
-        bool[members.length] visited;
-        // Pre-mark optional fields as visited
-        static foreach(idx, m; members) {
-            static if(hasUDA!(__traits(getMember, T, m), optional)) {
-                visited[idx] = true;
-            }
-            static if(hasUDA!(__traits(getMember, T, m), extras))
-            {
-                // this is the extras member, it holds any extra data that was not
-                // specified as a member.
-                static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-                // initialize it for use
-                __traits(getMember, item, m).type = JSONType.Obj;
-                __traits(getMember, item, m).object = null;
-                // extras is always optional.
-                visited[idx] = true;
-            }
-        }
-
-        return visited;
-    }
-}
-
-auto onArrayBegin(P, JT, T)(ref P policy, ref JT tokenizer, ref T item)
-{
-    return ubyte.init;
-}
-
-void onField(bool caseInsensitive = false, P, JT, T, Element, C)(ref P policy, ref JT tokenizer, ref T item, Element key, ref C context) {
-    static if(is(T == V[K], V, K)) {
-        // convert key into K, forcing a copy. We must copy because this key needs to exist forever.
-        auto k = extractString!(K, true)(key);
-        // extract value
-        V v;
-        policy.deserializeImpl(tokenizer, v);
-        // store in the AA.
-        item[k] = v;
-    }
-    else {
-        static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
-        alias members = SerializableMembers!T;
-        alias ignoredMembers = AllIgnoredMembers!T;
-
-        static foreach(idx, m; members)
-        {
-            static if(hasUDA!(__traits(getMember, T, m), extras))
-            {
-                // this is the extras member, it holds any extra data that was not
-                // specified as a member.
-                static assert(is(typeof(__traits(getMember, T, m)) == JSONValue!S, S));
-                enum extrasMember = m;
-            }
-        }
-
-        // Check each member to see if it matches
-        switch(key.data)
-        {
-            static foreach(i, memberName; members) {
-                { // Add a block scope to contain each declaration, avoiding duplicate jsonName
-                  // declarations in the foreach loop.
-                    static if(!hasUDA!(__traits(getMember, T, memberName), extras)) {
-                        static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                            enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
-                        }
-                        else {
-                            enum jsonName = memberName;
-                        }
-
-                        case jsonName:
-                        // Choose appropriate deserialization method based on member type
-                        policy.deserializeImpl(tokenizer, __traits(getMember, item, memberName));
-                        context[i] = true; // Mark as visited
-                        return;  // ← IMPORTANT: Returns immediately!
-                    }
-                }
-            }
-
-            enum ignoreExtras = !is(typeof(extrasMember)) && hasUDA!(T, .ignoreExtras);
-
-
-            static if(ignoredMembers.length > 0)
-            {
-                static foreach(m; ignoredMembers)
-                {
-                    static foreach(s; m.ignoredMembers)
-                    {
-                        case s:
-                    }
-                }
-                // ignored members are ignored if they show up
-                tokenizer.skipItem();
-                break;
-            }
-
-            default:
-            static if(caseInsensitive)
-            {
-                // Case-insensitive comparison
-                import std.string : icmp;
-                auto keyStr = key.data;
-                static foreach(i, memberName; members) {
-                    {
-                        static if(hasUDA!(__traits(getMember, T, memberName), alternateName)) {
-                            enum jsonName = getUDAs!(__traits(getMember, T, memberName), alternateName)[0].name;
-                        }
-                        else {
-                            enum jsonName = memberName;
-                        }
-                        if (icmp(keyStr, jsonName) == 0) {
-                            goto case jsonName;
-                        }
-                    }
-                }
-            }
-            static if(ignoreExtras)
-            {
-                tokenizer.skipItem();
-                return; // Ignore unknown fields
-            }
-
-            static if(is(typeof(extrasMember)) && is(typeof(__traits(getMember, item, extrasMember)) == JSONValue!SType, SType))
-            {
-                // recurse with the JSONValue as the object. Note the change in
-                // context, as the AA field deserializer takes a ubyte.
-                ubyte _fakeContext;
-                onField!false(policy, tokenizer, __traits(getMember, item, extrasMember).object, key, _fakeContext);
-            } else {
-                // If we get here, it's truly an unknown field
-                throw new JSONIopipeException(format("No member named '%s' in type `%s`", key.data, T.stringof));
-            }
-        }
-    }
-}
-
-void onArrayElement(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t idx, ubyte unused)
-{
-    static if(__traits(isStaticArray, T))
-    {
-        // Check bounds explicitly
-        if (idx >= T.length) {
-            throw new JSONIopipeException(format("Array index %s out of bounds for static array of length %s", idx, T.length));
-        }
-
-        // Deserialize the item at the given index
-        policy.deserializeImpl(tokenizer, item[idx]);
-    }
-    else // output range? support appender only for now
-    {
-        typeof(item[][0]) newElem;
-        // Deserialize the item at the given index
-        policy.deserializeImpl(tokenizer, newElem);
-
-        // append to the output range
-        item.put(newElem);
-    }
-}
-
-void onObjectEnd(P, JT, T, C)(ref P policy, ref JT tokenizer, ref T item, ref C context) {
-    static if(is(T == V[K], V, K)) {
-    }
-    else {
-        static assert(is(C == bool[N], size_t N) && N == SerializableMembers!T.length);
-        alias members = SerializableMembers!T;
-        // ensure all members visited
-        static if(members.length)
-        {
-            import std.algorithm : canFind, map, filter;
-            if(context[].canFind(false))
-            {
-                // this is a bit ugly, but gives a nicer message.
-                static immutable marr = [members];
-                import std.range : enumerate;
-                throw new JSONIopipeException(format("The following members of `%s` were not specified: `%-(%s` `%)`", T.stringof, context[].enumerate.filter!(a => !a[1]).map!(a => marr[a[0]])));
-            }
-        }
-    }
-}
-
-void onArrayEnd(P, JT, T)(ref P policy, ref JT tokenizer, ref T item, size_t length, ubyte unused)
-{
-    static if(__traits(isStaticArray, T))
-    {
-        if(T.length != length) // didn't serialize all elements
-        {
-            throw new JSONIopipeException(format("Expected array of length %s for type `%s`, but only got length %s", T.length, T.stringof, length));
-        }
-    }
-}
 
 // define some UDAs to affect serialization
 struct IgnoredMembers { string[] ignoredMembers; }
@@ -620,29 +1054,7 @@ auto peekSkipComma(JT)(ref JT tokenizer)
 }
 
 
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == enum))
-{
-    // enums are special, we can serialize them based on the enum name, or the
-    // base type.
-    static if(hasUDA!(T, enumBaseType))
-    {
-        policy.deserializeImpl(tokenizer, *(cast(OriginalType!T*)&item));
-    }
-    else
-    {
-        // convert to the enum via the string name
-        auto jsonItem = tokenizer.nextSignificant
-            .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
-        item = jsonItem.data.to!T;
-    }
-}
 
-// Keys currently must be some string type. Future versions may allow
-// conversion from character data.
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == V[K], V, K))
-{
-    deserializeObject(policy, tokenizer, item);
-}
 
 unittest
 {
@@ -652,101 +1064,6 @@ unittest
     assert(deserialize!(int[dstring])(`{"a": 1, "b": 2}`) == ["a"d : 1, "b" : 2]);
 }
 
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (!is(T == enum) && isNumeric!T)
-{
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.Number, "Parsing " ~ T.stringof);
-
-    auto str = jsonItem.data;
-    static if(isIntegral!T)
-    {
-        if(jsonItem.hint != JSONParseHint.Int &&
-                !(tokenizer.config.JSON5 && jsonItem.hint == JSONParseHint.Hex))
-        {
-            throw new JSONIopipeException(format("Cannot parse `%s` from '%s'", T.stringof, jsonItem.data));
-        }
-    }
-    else
-    {
-        static if(tokenizer.config.JSON5)
-        {
-            // if it's +/- infinity, phobos doesn't parse this properly.
-            if(jsonItem.hint == JSONParseHint.Infinity)
-            {
-                auto window = jsonItem.data;
-                if(window[0] == '-')
-                    item = -T.infinity;
-                else
-                    item = T.infinity;
-                return;
-            }
-        }
-    }
-
-    // get the string from the buffer that contains the number
-    auto window = jsonItem.data;
-    static if(isIntegral!T && tokenizer.config.JSON5)
-    {
-        if(jsonItem.hint == JSONParseHint.Hex)
-        {
-            // have to do this somewhat manually, as there is no function to
-            // properly parse the "0x" in phobos
-            int sign = 1;
-            switch(window[0])
-            {
-                case '0':
-                    window = window[2 .. $];
-                    break;
-                case '-':
-                    sign = -1;
-                    window = window[3 .. $];
-                    break;
-                case '+':
-                    window = window[3 .. $];
-                    break;
-                default:
-                    assert(false, "invalid hex number detected! " ~ window);
-            }
-            item = window.parse!T(16) * sign;
-        }
-        else
-            item = window.parse!T;
-    }
-    else
-        item = window.parse!T;
-    if(!window.empty)
-    {
-        throw new JSONIopipeException(format("Parsing of `%s` from source '%s' failed near '%s'", T.stringof, jsonItem.data, window));
-    }
-}
-
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == bool))
-{
-    auto jsonItem = tokenizer.nextSignificant;
-    if(jsonItem.token == JSONToken.True)
-    {
-        item = true;
-    }
-    else if(jsonItem.token == JSONToken.False)
-    {
-        item = false;
-    }
-    else
-    {
-        throw new JSONIopipeException(format("Parsing bool: expected %s or %s , but got %s", JSONToken.True, JSONToken.False, jsonItem.token));
-    }
-}
-
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isSomeString!T)
-{
-    // Use phobos `to`, we want to duplicate the string if necessary.
-
-    auto jsonItem = tokenizer.nextSignificant
-        .jsonExpect(JSONToken.String, "Parsing " ~ T.stringof);
-
-    // this should not fail unless the data is non-unicode
-    item = extractString!T(jsonItem);
-}
 
 private template SerializableMembers(T)
 {
@@ -778,75 +1095,7 @@ private template checkRef(alias FromJSON, JT, P)
         static assert(0, "Precondition violated. fromJSON with Policy must only take template parameters JT and P, in any order");
 }
 
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (is(T == struct) && __traits(hasMember, T, "fromJSON"))
-{
-    static if(__traits(compiles, T.fromJSON(tokenizer, policy))) {
-        // use policy object
-        static assert(checkRef!(T.fromJSON, JT, P),
-            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        item = T.fromJSON(tokenizer, policy);
-    } else static if(is(Parameters!(T.fromJSON!JT)[1] == ReleasePolicy)) {
-        // use ReleasePolicy
-         static assert(isJTRef!(T.fromJSON!JT),
-            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        item = T.fromJSON(tokenizer, policy.relPol);
-    } else static if(__traits(compiles, T.fromJSON(tokenizer))) {
-        // use one parameter only
-         static assert(isJTRef!(T.fromJSON!JT),
-            "fromJSON must take tokenizer by ref, otherwise it can't advance the read position.");
-        item = T.fromJSON(tokenizer);
-    } else {
-        // This will fail to compile. Try to nudge the user to use a policy
-        pragma(msg, "Hint: fromJSON also doesn't compile with parameters (JSONTokenizer, ReleasePolicy) or  or just with (JSONTokenizer)");
-        item = T.fromJSON(tokenizer, policy);
-    }
-}
 
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(JSONValue, T))
-{
-    auto token = tokenizer.peekSignificant();
-    with(JSONToken) switch (token)
-    {
-        case ObjectStart:
-            item.type = JSONType.Obj;
-            item.object = null;
-            policy.deserializeImpl(tokenizer, item.object);
-            break;
-        case ArrayStart:
-            item.type = JSONType.Array;
-            item.array = null;
-            policy.deserializeImpl(tokenizer, item.array);
-            break;
-        case String:
-        case Symbol:
-            item.type = JSONType.String;
-            policy.deserializeImpl(tokenizer, item.str);
-            break;
-        case Number:
-            auto jsonItem = tokenizer.next;
-            tokenizer.jumpBack(1);
-            if(jsonItem.hint == JSONParseHint.Int) {
-                item.type = JSONType.Integer;
-                policy.deserializeImpl(tokenizer, item.integer);
-            } else {
-                item.type = JSONType.Floating;
-                policy.deserializeImpl(tokenizer, item.floating);
-            }
-            break;
-        case True:
-        case False:
-            item.type = JSONType.Bool;
-            policy.deserializeImpl(tokenizer, item.boolean);
-            break;
-        case Null:
-            item.type = JSONType.Null;
-            // consume the null, validating it.
-            cast(void)tokenizer.nextSignificant().jsonExpect(JSONToken.Null, "Parsing Null");
-            break;
-        default:
-            throw new JSONIopipeException(format("Cannot deserialize JSONValue from %s", token));
-    }
-}
 
 unittest {
     // Test emptyObject first
@@ -873,6 +1122,8 @@ unittest {
 
 void deserializeAllMembers(T, JT)(ref JT tokenizer, ref T item, ReleasePolicy relPol)
 {
+    auto sc = contextWithPolicies(DefaultDeserializationPolicy!false(relPol));
+
     // expect an object in JSON. We want to deserialize the JSON data
     alias members = SerializableMembers!T;
     alias ignoredMembers = AllIgnoredMembers!T;
@@ -931,8 +1182,7 @@ OBJ_MEMBER_SWITCH:
                     else
                         enum jsonName = m;
                 case jsonName:
-                    auto policy = DefaultDeserializationPolicy!false(relPol);
-                    policy.deserializeImpl(tokenizer, __traits(getMember, item, m));
+                    sc.deserializeImpl(tokenizer, __traits(getMember, item, m));
                     visited[i] = true;
                     break OBJ_MEMBER_SWITCH;
                 }}
@@ -963,8 +1213,7 @@ OBJ_MEMBER_SWITCH:
                 JSONValue!SType newItem;
                 // Need to save name() before deserializeImpl potentially calls release and invalidates the window
                 auto key = name().to!(immutable(SType));
-                auto policy = DefaultDeserializationPolicy!false(relPol);
-                policy.deserializeImpl(tokenizer, newItem);
+                sc.deserializeImpl(tokenizer, newItem);
                 __traits(getMember, item, extrasMember).object[key] = newItem;
                 break OBJ_MEMBER_SWITCH;
             }}
@@ -999,58 +1248,6 @@ OBJ_MEMBER_SWITCH:
     }
 }
 
-// if type is Nullable, first check for JSONToken.Null, and if not, try and
-// parse real item.
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if (isInstanceOf!(Nullable, T))
-{
-    if(tokenizer.peekSignificant == JSONToken.Null)
-    {
-        item.nullify;
-        // skip the null value
-        cast(void)tokenizer.nextSignificant;
-    }
-    else
-    {
-        typeof(item.get()) result;
-        policy.deserializeImpl(tokenizer, result);
-        item = result;
-    }
-}
-
-// deserialize a class or interface. The type must either provide a static
-// function that returns the deserialized type, or have a zero-arg constructor.
-void deserializeImpl(P, T, JT)(ref P policy, ref JT tokenizer, ref T item) if ((is(T == class) || is(T == interface)))
-{
-    // NOTE: checking to see if it's callable doesn't help, because there could
-    // be a bug, and in that case, it tries the other branch.
-    static if(__traits(hasMember, T, "fromJSON"))
-        // && is(typeof(item = T.fromJSON(tokenizer, relPol))))
-    {
-        static if(__traits(compiles, T.fromJSON(tokenizer, policy)))
-            item = T.fromJSON(tokenizer, policy);
-        else static if(__traits(compiles, T.fromJSON(tokenizer, ReleasePolicy.init)))
-            item = T.fromJSON(tokenizer, policy.relPol);
-        else
-            // This will fail to compile. Try to nudge the user to use a policy
-            item = T.fromJSON(tokenizer, policy);
-    }
-    else static if(is(T == class))
-    {
-        // peek for a null token.
-        if(tokenizer.peekSignificant == JSONToken.Null)
-        {
-            item = null;
-            cast(void)tokenizer.nextSignificant;
-        }
-        else
-        {
-            auto t = new T();
-            deserializeObject(policy, tokenizer, t);
-            item = t;
-        }
-    }
-    else static assert(false, "Cannot deserialize interface " ~ T.stringof ~ " without a static `fromJson` member");
-}
 
 // deserialize null class member
 unittest
@@ -1333,14 +1530,14 @@ unittest
     static class C
     {
         int x;
-        static C fromJSON(P, JT)(ref JT tokenizer, ref P policy)
+        static C fromJSON(SC, JT)(ref JT tokenizer, ref SC sc)
         {
             auto idx = tokenizer.index;
             C doDeserialize(T)()
             {
                 tokenizer.index = idx;
                 auto item = new T;
-                deserializeObject(policy, tokenizer, item);
+                sc.deserializeObject(tokenizer, item);
                 return item;
             }
 
@@ -1381,107 +1578,6 @@ unittest
     assert(cArr.length == 3);
 }
 
-void deserializeObject(T, JT, Policy)(
-    ref Policy policy,
-    ref JT tokenizer,
-    ref T item,
-)
-{
-    // Begin deserialization
-    tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ObjectStart, "Parsing " ~ T.stringof);
-    auto context = policy.onObjectBegin(tokenizer, item);
-
-    // Process fields
-    while(tokenizer.peekSkipComma() != JSONToken.ObjectEnd)
-    {
-        // Key validation is already done in the parser.
-        auto key = tokenizer.nextSignificant
-            .jsonExpectValid("Expecting comma and/or member name of " ~ T.stringof);
-
-        // colon
-        tokenizer.nextSignificant()
-            .jsonExpectValid("Expecting colon when parsing " ~ T.stringof);
-
-        policy.onField(tokenizer, item, key, context);
-    }
-
-    // expect the object end
-    tokenizer.nextSignificant()
-            .jsonExpectValid("Expecting object end while parsing " ~ T.stringof);
-
-    // End deserialization
-    policy.onObjectEnd(tokenizer, item, context);
-}
-
-void deserializeImpl(T, JT, Policy)(
-    ref Policy policy,
-    ref JT tokenizer,
-    ref T item,
-) if (is(T == struct) && !isInstanceOf!(JSONValue, T) && !isInstanceOf!(Nullable, T) && !__traits(hasMember, T, "fromJSON"))
-{
-
-    // check to see if any member is defined as the representation
-    alias representers = getSymbolsByUDA!(T, serializeAs);
-    static if(representers.length > 0)
-    {
-        static assert(representers.length == 1, "Only one field can be used to represent an object");
-        policy.deserializeImpl(tokenizer, __traits(getMember, item, __traits(identifier, representers[0])));
-    }
-    else
-    {
-        deserializeObject(policy, tokenizer, item);
-    }
-}
-
-void deserializeArray(T, JT, Policy)(
-    ref Policy policy,
-    ref JT tokenizer,
-    ref T item
-)
-{
-    tokenizer.nextSignificant
-        .jsonExpect(JSONToken.ArrayStart, "Parsing " ~ T.stringof);
-    auto context = policy.onArrayBegin(tokenizer, item);
-
-    // Parse array elements
-    size_t elementCount = 0;
-    while(tokenizer.peekSkipComma() != JSONToken.ArrayEnd) {
-        policy.onArrayElement(tokenizer, item, elementCount, context);
-        elementCount++;
-    }
-
-    // verify we got an end array element
-    tokenizer.nextSignificant
-        .jsonExpectValid("Expecting array end while parsing " ~ T.stringof);
-
-    policy.onArrayEnd(tokenizer, item, elementCount, context);
-}
-
-void deserializeImpl(T, JT, Policy)(
-    ref Policy policy,
-    ref JT tokenizer,
-    ref T item
-) if (__traits(isStaticArray, T))
-{
-    deserializeArray(policy, tokenizer, item);
-}
-
-void deserializeImpl(T, JT, Policy)(
-    ref Policy policy,
-    ref JT tokenizer,
-    ref T item
-) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{
-    import std.array : Appender;
-    // Deserialize into an appender
-    auto app = Appender!T();
-
-    deserializeArray(policy, tokenizer, app);
-
-    // store the appender data into the actual item
-    item = app[];
-}
 
 unittest
 {
@@ -1519,18 +1615,17 @@ unittest
     // Test custom handling of a type with a policy.
 
     static struct DTStringPolicy {
-        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
-            static if (is(T == DateTime))
-            {
-                // Deserialize DateTime from a string
-                auto jsonItem = tokenizer.nextSignificant
-                    .jsonExpect(JSONToken.String, "Parsing DateTime");
-                item = DateTime.fromSimpleString(extractString!string(jsonItem));
-            }
-            else {
-                // default to module behavior
-                .deserializeImpl(this, tokenizer, item);
-            };
+        Handled deserializeImpl(JT, T : DateTime, SC)(ref JT tokenizer, ref T item, ref SC sc) {
+            // Deserialize DateTime from a string
+            auto jsonItem = tokenizer.nextSignificant
+                .jsonExpect(JSONToken.String, "Parsing DateTime");
+            item = DateTime.fromSimpleString(extractString!string(jsonItem));
+            return handled;
+        }
+
+        Unhandled deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) {
+            // let the next policy handle it
+            return unhandled;
         }
     }
 
@@ -1561,18 +1656,19 @@ unittest
     import std.datetime.date;
 
     static struct DTStringPolicy {
-        void deserializeImpl(JT, T)(ref JT tokenizer, ref T item) {
+        auto deserializeImpl(JT, T, SC)(ref JT tokenizer, ref T item, ref SC sc) {
             static if (is(T == DateTime))
             {
                 // Deserialize DateTime from a string
                 auto jsonItem = tokenizer.nextSignificant
                     .jsonExpect(JSONToken.String, "Parsing DateTime");
                 item = DateTime.fromSimpleString(extractString!string(jsonItem));
+                return handled;
             }
             else {
-                // default to module behavior
-                .deserializeImpl(this, tokenizer, item);
-            };
+                // let the next policy handle it
+                return unhandled;
+            }
         }
     }
 
@@ -1646,13 +1742,34 @@ unittest
     );
 }
 
+// Build the context for the given policy. If the policy is already a
+// context, it is used as-is. Otherwise, the policy is placed first in a new
+// context, with the default policy as the fallback (unless it is the default
+// policy).
 void deserialize(T, JT, Policy)(
     ref JT tokenizer,
     ref T item,
     auto ref Policy policy
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    policy.deserializeImpl(tokenizer, item);
+    static if(isSerializeContext!Policy)
+    {
+        policy.deserializeImpl(tokenizer, item);
+    }
+    else static if(is(Policy == DefaultDeserializationPolicy!ci, bool ci))
+    {
+        auto sc = SerializeContext!Policy(policy);
+        sc.deserializeImpl(tokenizer, item);
+    }
+    else static if(is(Policy == MaxDepthPolicy)) {
+        auto sc = contextWithPolicies(policy, DefaultDeserializationPolicy!false());
+        sc.deserializeImpl(tokenizer, item);
+    }
+    else
+    {
+        auto sc = contextWithPolicies(policy, MaxDepthPolicy(), DefaultDeserializationPolicy!false());
+        sc.deserializeImpl(tokenizer, item);
+    }
 }
 
 T deserialize(T, JT, Policy)(
@@ -1669,7 +1786,7 @@ T deserialize(T, JT)(
     ref JT tokenizer,
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false();
+    auto policy = contextWithPolicies(MaxDepthPolicy(), DefaultDeserializationPolicy!false());
     return deserialize!T(tokenizer, policy);
 }
 
@@ -1678,7 +1795,7 @@ void deserialize(T, JT)(
     ref T item
 ) if (isInstanceOf!(JSONTokenizer, JT))
 {
-    auto policy = DefaultDeserializationPolicy!false();
+    auto policy = contextWithPolicies(MaxDepthPolicy(), DefaultDeserializationPolicy!false());
     deserialize(tokenizer, item, policy);
 }
 
@@ -1879,13 +1996,211 @@ unittest
 
 /* SERIALIZATION */
 
+/**
+ * The default serialization policy. All hooks are named `serializeImpl` (and
+ * `serializeAllMembers`), and take the writer, the value to serialize, and the
+ * `SerializeContext` (by ref, last). Use the context to recurse.
+ */
 struct DefaultSerializationPolicy {
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (__traits(isStaticArray, T))
+    {
+        // need an lvalue
+        auto slice = val[];
+        sc.serializeImpl(w, slice);
+        return handled;
+    }
 
-}
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == enum))
+    {
+        // enums are special, serialize based on the name. Unless there's a UDA
+        // saying to serialize as the base type.
+        static if(hasUDA!(T, enumBaseType))
+        {
+            sc.serializeImpl(w, *cast(OriginalType!T*)&val);
+        }
+        else
+        {
+            auto enumName = val.to!string;
+            sc.serializeImpl(w, enumName);
+        }
+        return handled;
+    }
 
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (__traits(isStaticArray, T))
-{
-    policy.serializeImpl(w, val[]);
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
+    {
+        w.beginArray();
+        foreach(ref item; val)
+        {
+            w.nextMember();
+            sc.serializeImpl(w, item);
+        }
+        w.endAggregate();
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == V[K], V, K) /* && isSomeString!K */)
+    {
+        // serialized as an object
+        w.beginObject();
+        foreach(k, ref v; val)
+        {
+            w.nextMember();
+            w.addMemberName(k);
+            w.addColon();
+
+            sc.serializeImpl(w, v);
+        }
+        w.endAggregate();
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (isSomeString!T && !is(T == enum))
+    {
+        w.beginString();
+        w.addStringData(val);
+        w.endString();
+        return handled;
+    }
+
+    Handled serializeAllMembers(Writer, T, SC)(ref Writer w, ref T val, ref SC sc)
+    {
+        // must be in an object
+        assert(w.inObj);
+
+        // serialize as an object
+        static foreach(n; SerializableMembers!T)
+        {
+            static if(hasUDA!(__traits(getMember, T, n), extras))
+            {
+                // this is the extras member, It should be an object, with all the information inside there.
+                foreach(k, ref v; __traits(getMember, val, n).object)
+                {
+                    w.nextMember();
+                    w.addMemberName(k);
+                    w.addColon();
+                    sc.serializeImpl(w, v);
+                }
+            }
+            else
+            {
+                w.nextMember();
+                static if(hasUDA!(__traits(getMember, T, n), alternateName))
+                    w.addMemberName(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
+                else
+                    w.addMemberName(n);
+                w.addColon();
+                sc.serializeImpl(w, __traits(getMember, val, n));
+            }
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == struct))
+    {
+        static if(isInstanceOf!(Nullable, T))
+        {
+            if(val.isNull)
+                w.addKeywordValue(KeywordValue.Null);
+            else
+                sc.serializeImpl(w, val.get);
+        }
+        else static if(isInstanceOf!(JSONValue, T))
+        {
+            with(JSONType) final switch(val.type)
+            {
+            case Integer:
+                sc.serializeImpl(w, val.integer);
+                break;
+            case Floating:
+                sc.serializeImpl(w, val.floating);
+                break;
+            case String:
+                sc.serializeImpl(w, val.str);
+                break;
+            case Array:
+                sc.serializeImpl(w, val.array);
+                break;
+            case Obj:
+                sc.serializeImpl(w, val.object);
+                break;
+            case Null:
+                typeof(null) n;
+                sc.serializeImpl(w, n);
+                break;
+            case Bool:
+                sc.serializeImpl(w, val.boolean);
+                break;
+            }
+        }
+        else static if(__traits(hasMember, T, "toJSON"))
+        {
+            val.toJSON(w, sc);
+        }
+        else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
+        {
+            alias representers = getSymbolsByUDA!(T, serializeAs);
+            // serialize as the single item
+            static assert(representers.length == 1, "Only one field can be used to represent an object");
+            sc.serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
+        }
+        else static if(isInputRange!T)
+        {
+            w.beginArray();
+            foreach(ref item; val)
+            {
+                w.nextMember();
+                sc.serializeImpl(w, item);
+            }
+            w.endAggregate();
+        }
+        else
+        {
+            w.beginObject();
+            sc.serializeAllMembers(w, val);
+            w.endAggregate();
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == class) || is(T == interface))
+    {
+        if(val is null)
+        {
+            w.addKeywordValue(KeywordValue.Null);
+            return handled;
+        }
+        // If the class defines a method toJSON, then use that. Otherwise, we will
+        // just serialize the data as we can.
+        static if(__traits(hasMember, T, "toJSON"))
+        {
+            val.toJSON(w, sc);
+        }
+        else
+        {
+            w.beginObject();
+            sc.serializeAllMembers(w, val);
+            w.endAggregate();
+        }
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(T == typeof(null)))
+    {
+        w.addKeywordValue(KeywordValue.Null);
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (!is(T == enum) && isNumeric!T)
+    {
+        w.addNumber(val);
+        return handled;
+    }
+
+    Handled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) if (is(Unqual!T == bool))
+    {
+        w.addKeywordValue(val ? KeywordValue.True : KeywordValue.False);
+        return handled;
+    }
 }
 
 unittest
@@ -1893,50 +2208,6 @@ unittest
     // ensure static array serialization works
     int[5] arr = [1,2,3,4,5];
     assert(serialize(arr) == "[1,2,3,4,5]");
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (is(T == enum))
-{
-    // enums are special, serialize based on the name. Unless there's a UDA
-    // saying to serialize as the base type.
-    static if(hasUDA!(T, enumBaseType))
-    {
-        policy.serializeImpl(w, *cast(OriginalType!T*)&val);
-    }
-    else
-    {
-        auto enumName = val.to!string;
-        policy.serializeImpl(w, enumName);
-    }
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (isDynamicArray!T && !isSomeString!T && !is(T == enum))
-{
-    // open brace
-    w.beginArray();
-    foreach(ref item; val)
-    {
-        w.nextMember();
-        policy.serializeImpl(w, item);
-    }
-    w.endAggregate();
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (is(T == V[K], V, K) /* && isSomeString!K */)
-{
-    assert(is(T == V[K], V, K));
-
-    // serialized as an object
-    w.beginObject();
-    foreach(k, v; val)
-    {
-        w.nextMember();
-        w.addMemberName(k);
-        w.addColon();
-
-        policy.serializeImpl(w, v);
-    }
-    w.endAggregate();
 }
 
 unittest
@@ -1950,14 +2221,6 @@ unittest
     }
     serialized = serialize([X.a : 1, X.b: 2]);
     assert(serialized == `{"a":1,"b":2}` || serialized == `{"b":2,"a":1}`);
-}
-
-/// Instantiate the template without arguments so it's not necessary at the callsite anymore
-void serializeImpl(P, T, Writer)(ref P Policy, ref Writer w, T val) if (isSomeString!T)
-{
-    w.beginString();
-    w.addStringData(val);
-    w.endString();
 }
 
 // Escape special characters
@@ -1982,130 +2245,11 @@ unittest
     assert(raw.serialize.deserialize!string == raw);
 }
 
-void serializeAllMembers(P, T, Writer)(ref P policy, ref Writer w, auto ref T val)
-{
-    // must be in an object
-    assert(w.inObj);
-
-    // serialize as an object
-    static foreach(n; SerializableMembers!T)
-    {
-        static if(hasUDA!(__traits(getMember, T, n), extras))
-        {
-            // this is the extras member, It should be an object, with all the information inside there.
-            foreach(k, ref v; __traits(getMember, val, n).object)
-            {
-                w.nextMember();
-                w.addMemberName(k);
-                w.addColon();
-                policy.serializeImpl(w, v);
-            }
-        }
-        else
-        {
-            w.nextMember();
-            static if(hasUDA!(__traits(getMember, T, n), alternateName))
-                w.addMemberName(getUDAs!(__traits(getMember, T, n), alternateName)[0].name);
-            else
-                w.addMemberName(n);
-            w.addColon();
-            policy.serializeImpl(w, __traits(getMember, val, n));
-        }
-    }
-}
-
 ///compatibility shim
 void serializeAllMembers(T, Writer)(ref Writer w, auto ref T val)
 {
-    auto policy = DefaultSerializationPolicy;
-    serializeAllmembers(policy, w, val);
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (is(T == struct))
-{
-    static if(isInstanceOf!(Nullable, T))
-    {
-        if(val.isNull)
-            w.addKeywordValue(KeywordValue.Null);
-        else
-            policy.serializeImpl(w, val.get);
-    }
-    else static if(isInstanceOf!(JSONValue, T))
-    {
-        with(JSONType) final switch(val.type)
-        {
-        case Integer:
-            policy.serializeImpl(w, val.integer);
-            break;
-        case Floating:
-            policy.serializeImpl(w, val.floating);
-            break;
-        case String:
-            policy.serializeImpl(w, val.str);
-            break;
-        case Array:
-            policy.serializeImpl(w, val.array);
-            break;
-        case Obj:
-            policy.serializeImpl(w, val.object);
-            break;
-        case Null:
-            policy.serializeImpl(w, null);
-            break;
-        case Bool:
-            policy.serializeImpl(w, val.boolean);
-            break;
-        }
-    }
-    else static if(__traits(hasMember, T, "toJSON"))
-    {
-        val.toJSON(policy, w);
-    }
-    else static if(getSymbolsByUDA!(T, serializeAs).length > 0)
-    {
-        alias representers = getSymbolsByUDA!(T, serializeAs);
-        // serialize as the single item
-        static assert(representers.length == 1, "Only one field can be used to represent an object");
-        policy.serializeImpl(w, __traits(getMember, val, __traits(identifier, representers[0])));
-    }
-    else static if(isInputRange!T)
-    {
-        // open brace
-        w.beginArray();
-        foreach(ref item; val)
-        {
-            w.nextMember();
-            policy.serializeImpl(w, item);
-        }
-        w.endAggregate();
-    }
-    else
-    {
-        w.beginObject();
-        policy.serializeAllMembers(w, val);
-        w.endAggregate();
-    }
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, T val) if (is(T == class) || is(T == interface))
-{
-    if(val is null)
-    {
-        w.addKeywordValue(KeywordValue.Null);
-        return;
-    }
-    // If the class defines a method toJSON, then use that. Otherwise, we will
-    // just serialize the data as we can.
-    static if(__traits(hasMember, T, "toJSON"))
-    {
-        val.toJSON(policy, w);
-    }
-    else
-    {
-        w.beginObject();
-        policy.serializeAllMembers(w, val);
-        w.endAggregate();
-    }
+    auto sc = contextWithPolicies(DefaultSerializationPolicy());
+    sc.serializeAllMembers(w, val);
 }
 
 // null class members
@@ -2122,12 +2266,6 @@ unittest
     assert(serialize(s) == `{"c":null}`);
 }
 
-
-void serializeImpl(P, Writer)(ref P policy, ref Writer w, typeof(null) val)
-{
-    w.addKeywordValue(KeywordValue.Null);
-}
-
 // allow serializing null
 unittest
 {
@@ -2136,16 +2274,6 @@ unittest
     }
     S s;
     assert(serialize(s) == `{"n":null}`);
-}
-
-void serializeImpl(P, T, Writer)(ref P policy, ref Writer w, ref T val) if (!is(T == enum) && isNumeric!T)
-{
-    w.addNumber(val);
-}
-
-void serializeImpl(P, Writer)(ref P policy, ref Writer w, bool val)
-{
-    w.addKeywordValue(val ? KeywordValue.True : KeywordValue.False);
 }
 
 // serialize an item to an iopipe.
@@ -2174,7 +2302,7 @@ if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
     return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), DefaultSerializationPolicy());
 }
 
-size_t serialize(T, Chain, Policy)(auto ref T val, auto ref Chain chain, auto ref T val, auto ref Policy policy)
+size_t serialize(T, Chain, Policy)(auto ref T val, auto ref Chain chain, auto ref Policy policy)
 if (isIopipe!Chain && isSomeChar!(ElementType!(WindowType!Chain)))
 {
     return serialize(val, chain.jsonWriter!(false, ReleaseOnWrite.yes), policy);
@@ -2189,8 +2317,23 @@ if (isJSONWriter!Writer)
 size_t serialize(T, Writer, Policy)(auto ref T val, auto ref Writer writer, auto ref Policy policy)
 if (isJSONWriter!Writer)
 {
-    // serialize the item, recursively
-    policy.serializeImpl(writer, val);
+    // Build the context for the given policy. If the policy is already a
+    // context, it is used as-is. Otherwise, the policy is placed first in a
+    // new context, with the default policy as the fallback.
+    static if(isSerializeContext!Policy)
+    {
+        policy.serializeImpl(writer, val);
+    }
+    else static if(is(Policy == DefaultSerializationPolicy))
+    {
+        auto sc = SerializeContext!Policy(policy);
+        sc.serializeImpl(writer, val);
+    }
+    else
+    {
+        auto sc = contextWithPolicies(policy, DefaultSerializationPolicy());
+        sc.serializeImpl(writer, val);
+    }
 
     return writer.totalWritten;
 }
@@ -2285,20 +2428,21 @@ unittest
     static class D : C
     {
         string s;
-        void toJSON(Writer)(DefaultSerializationPolicy policy, ref Writer w)
+        void toJSON(Writer)(ref Writer w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             // serialize using a wrapped json object
             static if(is(Writer : JSONWriterInterface!false))
-                return toJSONImpl(policy, w);
+                return toJSONImpl(w, sc);
             // wrap the json object to get everything virtual
             static assert(!w.hasJSON5, "doesn't support json5!");
             scope tmpFormatter = new JSONWriterObject!Writer(w);
-            toJSONImpl(policy, tmpFormatter);
+            toJSONImpl(tmpFormatter, sc);
         }
-        protected void toJSONImpl(DefaultSerializationPolicy policy, JSONWriterInterface!false w)
+        protected void toJSONImpl(JSONWriterInterface!false w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             w.beginObject();
-            policy.serializeAllMembers(w, this);
+            auto self = this;
+            sc.serializeAllMembers(w, self);
             w.endAggregate();
         }
     }
@@ -2306,10 +2450,11 @@ unittest
     static class E : D
     {
         double d;
-        override void toJSONImpl(DefaultSerializationPolicy policy, JSONWriterInterface!false w)
+        override void toJSONImpl(JSONWriterInterface!false w, ref SerializeContext!DefaultSerializationPolicy sc)
         {
             w.beginObject();
-            policy.serializeAllMembers(w, this);
+            auto self = this;
+            sc.serializeAllMembers(w, self);
             w.endAggregate();
         }
     }
@@ -2344,14 +2489,15 @@ unittest
 
     static struct SerializeFooAsString
     {
-        void serializeImpl(T, Writer)(ref Writer w, ref T val) {
-            static if(is(T == Foo)) {
-                w.beginString();
-                w.addStringData(val.x.to!string);
-                w.endString();
-            }
-            else
-                .serializeImpl(this, w, val);
+        Handled serializeImpl(Writer, T : Foo, SC)(ref Writer w, ref T val, ref SC sc) {
+            w.beginString();
+            w.addStringData(val.x.to!string);
+            w.endString();
+            return handled;
+        }
+
+        Unhandled serializeImpl(Writer, T, SC)(ref Writer w, ref T val, ref SC sc) {
+            return unhandled;
         }
     }
 
